@@ -178,10 +178,12 @@ export async function POST(req: NextRequest) {
     if (!receipt) {
       return {
         ...row,
+        documentLink: "",
         valid: false,
         checkReason: error ? `ตรวจสอบใบเสร็จไม่สำเร็จ: ${error}` : "ไม่พบใบเสร็จนี้ใน PEAK (อาจถูกลบ/void ไปแล้ว)",
       };
     }
+    const documentLink = receipt.documentLink ?? "";
     const built = buildRow(receipt, contactCache, sent, journalMap);
     // ใบนี้มาจากรายงาน PEAK ที่ยืนยันแล้วว่า "ยังไม่ส่ง" (Await) แต่ log ของเราเองดัน
     // คิดว่าเคยส่งสำเร็จแล้ว (alreadySent) — เป็นไปได้แค่กรณีเดียว: เคยยิงคำขอไปแล้ว PEAK
@@ -191,11 +193,12 @@ export async function POST(req: NextRequest) {
     if (built.alreadySent) {
       return {
         ...row,
+        documentLink,
         valid: true,
         checkReason: "ระบบเราคิดว่าเคยส่งสำเร็จแล้ว แต่รายงาน PEAK ยืนยันว่ายังไม่ส่งจริง (อาจไม่เคยได้รับ callback ยืนยันผล) — ต้องส่งซ้ำแบบบังคับ",
       };
     }
-    return { ...row, valid: built.valid, checkReason: built.reason };
+    return { ...row, documentLink, valid: built.valid, checkReason: built.reason };
   });
 
   // เทียบใบที่รายงานบอกว่า "ส่งแล้ว" กับ log ของเราเอง — ใบไหนเรายังไม่มีประวัติว่าส่งสำเร็จ

@@ -12,6 +12,7 @@ interface AwaitRow {
   taxId: string;
   grandTotal: unknown;
   statusEDoc: string;
+  documentLink: string;
   valid: boolean;
   checkReason: string;
 }
@@ -46,6 +47,26 @@ interface RowOutcome {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// จัดกลุ่มสถานะของแต่ละแถวสำหรับ filter — แยกจาก outcome.phase ตรง ๆ เพราะ "skipped"/
+// "send-error"/"failed" รวมกันเป็นกลุ่มเดียว ("ส่งไม่สำเร็จ") จากมุมมองผู้ใช้ ไม่ต้องแยกย่อย
+type FilterKey = "all" | "ready" | "invalid" | "issued" | "waiting" | "notOk";
+const FILTER_LABEL: Record<FilterKey, string> = {
+  all: "ทั้งหมด",
+  ready: "พร้อมส่ง",
+  invalid: "มีปัญหา",
+  issued: "ส่งสำเร็จ",
+  waiting: "รอผล INET",
+  notOk: "ส่งไม่สำเร็จ",
+};
+function categoryOf(r: AwaitRow, oc: RowOutcome | undefined): FilterKey {
+  if (oc) {
+    if (oc.phase === "issued") return "issued";
+    if (oc.phase === "accepted") return "waiting";
+    return "notOk"; // failed | send-error | skipped
+  }
+  return r.valid ? "ready" : "invalid";
+}
+
 /**
  * นำเข้าไฟล์รายงานที่ export จากหน้าเว็บ PEAK เอง มาดูเฉพาะแถวที่ "ยังไม่ส่ง" — ใช้เป็นแหล่ง
  * ความจริงสำรอง เพราะ PEAK Open API ไม่มี endpoint เช็คสถานะนี้โดยตรงเลย (ตรวจสอบแล้วหลายทาง
@@ -72,6 +93,7 @@ export function ImportReportPanel() {
   const [outcomes, setOutcomes] = useState<Record<string, RowOutcome>>({});
   const [reconciling, setReconciling] = useState(false);
   const [reconciled, setReconciled] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<FilterKey>("all");
   const inputRef = useRef<HTMLInputElement>(null);
 
   const onPick = () => inputRef.current?.click();
@@ -82,6 +104,7 @@ export function ImportReportPanel() {
     setSelected(new Set());
     setOutcomes({});
     setReconciled(false);
+    setStatusFilter("all");
   };
 
   const onFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -109,8 +132,19 @@ export function ImportReportPanel() {
     }
   };
 
-  // เลือกส่งได้เฉพาะใบที่ผ่านตรวจสอบ (valid) และยังไม่มีผลส่งในรอบนี้เท่านั้น
-  const selectableRows = (result?.rows ?? []).filter((r) => r.valid && !outcomes[r.code]);
+  const allRows = result?.rows ?? [];
+  const statusCounts = allRows.reduce<Record<FilterKey, number>>(
+    (acc, r) => {
+      acc.all++;
+      acc[categoryOf(r, outcomes[r.code])]++;
+      return acc;
+    },
+    { all: 0, ready: 0, invalid: 0, issued: 0, waiting: 0, notOk: 0 }
+  );
+  const filteredRows = statusFilter === "all" ? allRows : allRows.filter((r) => categoryOf(r, outcomes[r.code]) === statusFilter);
+
+  // เลือกส่งได้เฉพาะใบที่ผ่านตรวจสอบ (valid), ยังไม่มีผลส่งในรอบนี้ และตรงกับ filter ที่กำลังดูอยู่
+  const selectableRows = filteredRows.filter((r) => r.valid && !outcomes[r.code]);
   const allSelected = selectableRows.length > 0 && selectableRows.every((r) => selected.has(r.code));
   const toggleAll = () => {
     const ns = new Set(selected);
@@ -328,10 +362,29 @@ export function ImportReportPanel() {
                       </button>
                     )}
                   </div>
+                  {result.rows.length > 0 && (
+                    <div className="filter-group" role="tablist" style={{ marginBottom: 12 }}>
+                      {(Object.keys(FILTER_LABEL) as FilterKey[]).map((key) => (
+                        <button
+                          key={key}
+                          className={"pill" + (statusFilter === key ? " active" : "")}
+                          onClick={() => setStatusFilter(key)}
+                        >
+                          {FILTER_LABEL[key]}
+                          <span className="badge num">{statusCounts[key]}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {result.rows.length === 0 ? (
                     <div className="empty">
                       <Icon.Inbox size={36} stroke={1.4} />
                       <div style={{ fontWeight: 500, color: "var(--text-2)" }}>ไม่มีใบที่รอส่งในไฟล์นี้</div>
+                    </div>
+                  ) : filteredRows.length === 0 ? (
+                    <div className="empty">
+                      <Icon.Inbox size={36} stroke={1.4} />
+                      <div style={{ fontWeight: 500, color: "var(--text-2)" }}>ไม่มีใบที่ตรงกับตัวกรองนี้</div>
                     </div>
                   ) : (
                     <div className="table-wrap">
@@ -359,7 +412,7 @@ export function ImportReportPanel() {
                           </tr>
                         </thead>
                         <tbody>
-                          {result.rows.map((r) => {
+                          {filteredRows.map((r) => {
                             const oc = outcomes[r.code];
                             const sel = selected.has(r.code);
                             const canSelect = r.valid && !oc;
@@ -375,7 +428,15 @@ export function ImportReportPanel() {
                                     {sel && <Icon.Check size={11} />}
                                   </button>
                                 </td>
-                                <td className="mono">{r.code}</td>
+                                <td onClick={(e) => r.documentLink && e.stopPropagation()}>
+                                  {r.documentLink ? (
+                                    <a className="receipt" href={r.documentLink} target="_blank" rel="noopener noreferrer">
+                                      {r.code}
+                                    </a>
+                                  ) : (
+                                    <span className="mono">{r.code}</span>
+                                  )}
+                                </td>
                                 <td className="when">{r.issueDate || "-"}</td>
                                 <td>{r.customerName || "-"}</td>
                                 <td className="mono">{r.taxId || "-"}</td>
