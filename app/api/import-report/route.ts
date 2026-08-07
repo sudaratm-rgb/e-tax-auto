@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const awaitRaw: {
+  interface RawRow {
     code: string;
     issueDate: string;
     status: string;
@@ -115,30 +115,35 @@ export async function POST(req: NextRequest) {
     taxId: string;
     grandTotal: unknown;
     statusEDoc: string;
-  }[] = [];
-  const sentCodesInFile: string[] = [];
+  }
+  const awaitRaw: RawRow[] = [];
+  // แถวที่ไฟล์บอกว่า "ส่งแล้ว" — เก็บข้อมูลดิบจากไฟล์ไว้แสดงผลด้วยเลย (ไม่ต้องยิง PEAK เพิ่ม
+  // เพราะไม่ต้องตรวจสอบ contact/journal อีกแล้ว ส่งสำเร็จไปแล้วจริง) ไฟล์เต็มเดือนมีเป็นพัน
+  // แถว ถ้ายิง API เพิ่มทุกแถวจะช้าเกินไปมาก และไม่จำเป็นด้วย
+  const sentRaw: RawRow[] = [];
   for (let i = headerRowIdx + 1; i < json.length; i++) {
     const r = json[i];
     if (!Array.isArray(r) || !r.length || !r[idx.docNo]) continue;
     const code = String(r[idx.docNo] ?? "");
     const statusEDoc = String(r[idx.statusEDoc] ?? "").trim();
-    if (SENT_VALUES.has(statusEDoc)) {
-      sentCodesInFile.push(code);
-      continue;
-    }
-    if (!AWAIT_VALUES.has(statusEDoc)) continue;
-    const status = String(r[idx.status] ?? "").trim();
-    if (!READY_STATUS_VALUES.has(status)) continue; // ตัด Draft/อื่น ๆ ออก เอาแค่จ่ายแล้ว/สมบูรณ์แล้ว
-    awaitRaw.push({
+    const rawRow: RawRow = {
       code,
       issueDate: String(r[idx.issueDate] ?? ""),
-      status,
+      status: String(r[idx.status] ?? "").trim(),
       customerName: String(r[idx.customerName] ?? ""),
       taxId: String(r[idx.taxId] ?? ""),
       grandTotal: r[idx.grandTotal],
       statusEDoc,
-    });
+    };
+    if (SENT_VALUES.has(statusEDoc)) {
+      sentRaw.push(rawRow);
+      continue;
+    }
+    if (!AWAIT_VALUES.has(statusEDoc)) continue;
+    if (!READY_STATUS_VALUES.has(rawRow.status)) continue; // ตัด Draft/อื่น ๆ ออก เอาแค่จ่ายแล้ว/สมบูรณ์แล้ว
+    awaitRaw.push(rawRow);
   }
+  const sentCodesInFile = sentRaw.map((r) => r.code);
 
   // ตรวจสอบข้อมูล contact + journal ของแถว "ยังไม่ส่ง" ทุกใบ เหมือนตารางหลักทุกประการ
   // (ใช้ buildRow ตัวเดียวกัน) ก่อนอนุญาตให้ติ๊กส่งได้ — ไฟล์ Excel มีแค่ชื่อลูกค้า/เลขภาษี
@@ -173,12 +178,13 @@ export async function POST(req: NextRequest) {
   }
   const sent = await sendLog.sentCodes();
 
-  const rows = awaitRaw.map((row, i) => {
+  const awaitRows = awaitRaw.map((row, i) => {
     const { receipt, error } = receiptResults[i];
     if (!receipt) {
       return {
         ...row,
         documentLink: "",
+        alreadySent: false,
         valid: false,
         checkReason: error ? `ตรวจสอบใบเสร็จไม่สำเร็จ: ${error}` : "ไม่พบใบเสร็จนี้ใน PEAK (อาจถูกลบ/void ไปแล้ว)",
       };
@@ -194,12 +200,25 @@ export async function POST(req: NextRequest) {
       return {
         ...row,
         documentLink,
+        alreadySent: false,
         valid: true,
         checkReason: "ระบบเราคิดว่าเคยส่งสำเร็จแล้ว แต่รายงาน PEAK ยืนยันว่ายังไม่ส่งจริง (อาจไม่เคยได้รับ callback ยืนยันผล) — ต้องส่งซ้ำแบบบังคับ",
       };
     }
-    return { ...row, documentLink, valid: built.valid, checkReason: built.reason };
+    return { ...row, documentLink, alreadySent: false, valid: built.valid, checkReason: built.reason };
   });
+
+  // แถวที่ไฟล์บอกว่า "ส่งแล้ว" — ไม่ต้องตรวจสอบ/ยิง PEAK เพิ่ม แสดงข้อมูลดิบจากไฟล์ไปเลย
+  // (documentLink ว่างไว้ ไม่คุ้มยิง API เพิ่มอีกเป็นพันครั้งแค่เพื่อลิงก์ใบที่ส่งไปแล้ว)
+  const sentRows = sentRaw.map((row) => ({
+    ...row,
+    documentLink: "",
+    alreadySent: true,
+    valid: false,
+    checkReason: "ส่งสำเร็จแล้ว (ตามรายงาน PEAK)",
+  }));
+
+  const rows = [...awaitRows, ...sentRows];
 
   // เทียบใบที่รายงานบอกว่า "ส่งแล้ว" กับ log ของเราเอง — ใบไหนเรายังไม่มีประวัติว่าส่งสำเร็จ
   // (เช่น ส่งผ่าน PEAK UI ตรง ๆ ไม่ผ่านแอปนี้) ให้ไว้ sync/บันทึกทับสถานะได้
@@ -208,7 +227,7 @@ export async function POST(req: NextRequest) {
   const totalDataRows = json.length - headerRowIdx - 1;
   return NextResponse.json({
     total: totalDataRows,
-    awaitCount: rows.length,
+    awaitCount: awaitRows.length,
     rows,
     sentInFileCount: sentCodesInFile.length,
     needsReconcile,

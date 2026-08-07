@@ -13,6 +13,7 @@ interface AwaitRow {
   grandTotal: unknown;
   statusEDoc: string;
   documentLink: string;
+  alreadySent: boolean;
   valid: boolean;
   checkReason: string;
 }
@@ -64,6 +65,7 @@ function categoryOf(r: AwaitRow, oc: RowOutcome | undefined): FilterKey {
     if (oc.phase === "accepted") return "waiting";
     return "notOk"; // failed | send-error | skipped
   }
+  if (r.alreadySent) return "issued"; // ส่งสำเร็จมาก่อนแล้วตามรายงาน PEAK (ไม่ใช่ในรอบนี้)
   return r.valid ? "ready" : "invalid";
 }
 
@@ -417,7 +419,7 @@ export function ImportReportPanel() {
                             const sel = selected.has(r.code);
                             const canSelect = r.valid && !oc;
                             return (
-                              <tr key={r.code} className={(sel ? "selected " : "") + (!r.valid ? "failed-row" : "")}>
+                              <tr key={r.code} className={(sel ? "selected " : "") + (!r.valid && !r.alreadySent ? "failed-row" : "")}>
                                 <td>
                                   <button
                                     className={"check" + (sel ? " on" : "")}
@@ -447,12 +449,14 @@ export function ImportReportPanel() {
                                 <td>
                                   {oc ? (
                                     <span className={"status " + OUTCOME_CLASS[oc.phase]}>{OUTCOME_LABEL[oc.phase]}</span>
+                                  ) : r.alreadySent ? (
+                                    <span className="status success">ส่งสำเร็จ</span>
                                   ) : (
                                     <span className={"status " + (r.valid ? "pending" : "failed")}>{r.valid ? r.statusEDoc : "Error"}</span>
                                   )}
                                 </td>
                                 <td>
-                                  <span className={"note" + (oc && oc.phase !== "issued" && oc.phase !== "accepted" ? " err" : "")}>
+                                  <span className={"note" + (!r.alreadySent && oc && oc.phase !== "issued" && oc.phase !== "accepted" ? " err" : "")}>
                                     {oc ? oc.message : r.checkReason || "-"}
                                   </span>
                                 </td>
