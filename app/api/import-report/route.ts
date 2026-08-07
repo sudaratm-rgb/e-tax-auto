@@ -40,11 +40,13 @@ const COLUMN_ALIASES = {
 const AWAIT_VALUES = new Set(["Await", "ยังไม่ส่ง"]);
 const SENT_VALUES = new Set(["Sent", "ส่งแล้ว"]);
 
-// เอาเฉพาะเอกสารที่ "จ่ายแล้ว/สมบูรณ์แล้ว" เท่านั้น (ตัด Draft ออก) — สังเกตว่าค่าที่ใช้ต่าง
-// กันตามชนิดรายงาน: Receipt Report ใช้ "Paid" ส่วน Tax Invoice Report ใช้ "Issued" (ไม่มีค่า
-// "Paid" เลยในรายงานนี้ — เช็คจากไฟล์จริงแล้ว) ต้องรองรับทั้งคู่ ไม่งั้น Tax Invoice Report
-// จะไม่เหลือข้อมูลเลยสักแถวถ้ากรองเฉพาะ "Paid" เป๊ะ ๆ
-const READY_STATUS_VALUES = new Set(["Paid", "Issued"]);
+// เอาเฉพาะเอกสารที่ "จ่ายแล้ว/สมบูรณ์แล้ว" เท่านั้น (ตัด Draft/Voided ออก) — สแกนไฟล์จริงกว่า
+// 50 ไฟล์ (ก.ย. 2025 - ส.ค. 2026) เจอค่าที่ใช้จริงทั้งหมด: "Paid"/"รับชำระแล้ว" (Receipt
+// Report ปนกันทั้งอังกฤษ/ไทยตามภาษาที่ export ตอนนั้น) และ "Issued" (Tax Invoice Report,
+// พบแต่แบบอังกฤษ) ส่วน "Draft"/"ร่าง" และ "Voided" ตั้งใจไม่ใส่ไว้ในนี้ (ยังไม่พร้อมส่ง/
+// ถูกยกเลิกแล้ว) — ใช้วิธี allow-list (ไม่ใช่ block-list) ตั้งใจ เพื่อให้ค่าที่ไม่รู้จักใน
+// อนาคต (เผื่อ PEAK เพิ่ม status ใหม่) ถูกกันไว้ก่อนโดย default แทนที่จะหลุดผ่านไปโดยไม่ตั้งใจ
+const READY_STATUS_VALUES = new Set(["Paid", "รับชำระแล้ว", "Issued"]);
 
 function findColumnIndex(header: string[], aliases: readonly string[]): number {
   for (const name of aliases) {
