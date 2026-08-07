@@ -1,0 +1,22 @@
+.env
+.env.local
+sent_log.jsonl
+etax_callback.jsonl
+
+# เครื่องมือ local-dev-only (tunnel) — ไม่ใช่ส่วนของแอป ไม่ควร commit (ไฟล์ binary ใหญ่ด้วย)
+cloudflared.exe
+ngrok.exe
+*.log
+
+# ไฟล์รายงานจริงจาก PEAK ที่ใช้ทดสอบฟีเจอร์ import — มีข้อมูลลูกค้า/การเงินจริง ห้าม commit
+*.xlsx
+
+# การตั้งค่า Claude Code เฉพาะเครื่อง — ไม่ใช่ส่วนของแอป
+.claude/
+
+# Next.js
+/node_modules
+/.next/
+/out/
+next-env.d.ts
+*.tsbuildinfo
