@@ -199,29 +199,40 @@ contact) สำหรับกรณีอยากได้แค่ราย�
 > ฟิลด์นี้ไม่น่าเชื่อถือ (พบเคสจริงที่ `paidPayments[]` บันทึกครบเต็มจำนวนแล้วแต่
 > `remainAmount` ไม่ลดลงตาม) ใช้การมี journal เป็นตัวตัดสินแทน
 
-## ความเร็วในการดึงข้อมูล — contact cache + journal cache (`lib/contactCache.ts`, `lib/receiptDetailCache.ts`) ✅
-`GET /Contacts?code=` (ตรวจ contact ต่อใบ) เป็นคอขวดหลักของ `/api/fetch` (~5s/call) — ลอง
-วิธี "ดึง contact ทั้งบัญชีแบบ list/page ล่วงหน้า" ดูแล้ว **ไม่ช่วย**: ดึง 1 หน้า (100
-รายการ) ใช้เวลา ~14 วินาที พอ ๆ กับดึงทีละใบ ไม่คุ้มที่จะ sync ทั้งบัญชี (3,627 contact ใน
-บัญชีทดสอบ)
+## ความเร็วในการดึงข้อมูล — concurrency + contact/journal cache ✅
+สำหรับช่วงวันที่กว้าง (เช่น 10 วัน อาจมีถึง 1,000+ ใบ) มี 3 ขั้นที่คุม concurrency แยกกันได้
+ผ่าน env (ค่าที่เหมาะสมขึ้นกับบัญชีจริง ต้องทดสอบเอง — ยิ่งสูงยิ่งเร็ว แต่ยิ่งเสี่ยงชน
+`resCode 600` บ่อยขึ้น):
+
+| env var | คุมอะไร | default | หมายเหตุ |
+|---|---|---|---|
+| `RECEIPT_PAGE_CONCURRENCY` | จำนวนหน้า `GET /Receipts/list` ที่ดึงพร้อมกัน | 10 | ขั้นแรกสุด ดึงรายชื่อใบเสร็จ |
+| `CONTACT_FETCH_WORKERS` | จำนวน `GET /Contacts?code=` ที่ยิงพร้อมกัน | 12 | dedup ได้เยอะ (ลูกค้าเดิมซ้ำกันมาก) จึงไม่ต้องสูงมาก |
+| `JOURNAL_FETCH_WORKERS` | จำนวน `GET /Receipts?code=` (เช็ค journal) ที่ยิงพร้อมกัน | 20 | **dedup ไม่ได้เลย** (ทุกใบไม่ซ้ำกัน) — คอขวดหลักตัวจริงของช่วงวันที่กว้าง |
+
+`GET /Contacts?code=` เองก็ช้า (~5s/call) — ลองวิธี "ดึง contact ทั้งบัญชีแบบ list/page
+ล่วงหน้า" ดูแล้ว **ไม่ช่วย**: ดึง 1 หน้า (100 รายการ) ใช้เวลา ~14 วินาที พอ ๆ กับดึงทีละใบ
+ไม่คุ้มที่จะ sync ทั้งบัญชี (3,627 contact ในบัญชีทดสอบ)
 
 สิ่งที่ช่วยจริงคือ **cache 2 ชั้น** (ในหน่วยความจำผ่าน `globalThis` + PostgreSQL อยู่ข้าม
-restart ได้) สำหรับทั้ง contact และ journal:
+restart ได้ — `lib/contactCache.ts`, `lib/receiptDetailCache.ts`) สำหรับทั้ง contact และ journal:
 - **contact**: TTL 15 นาที เพราะลูกค้าเดิมซ้ำกันมากทั้งในวันเดียวกันและข้ามวันที่ต่างกัน —
   ทดสอบจริง: ดึงวันเดียวกันซ้ำ (contact ทุกตัวมาจาก cache หมด) จาก **29.2s เหลือ 0.7s** (~40x)
 - **journal**: TTL **ไม่เท่ากันตามผล** (asymmetric) เพราะ journal มีแต่จะ "ถูกเพิ่ม" ไม่ค่อย
   ถูกลบทีหลัง — `hasJournal=true` cache ได้นาน 24 ชม., `hasJournal=false` cache สั้นแค่ 5
   นาที (เผื่อมีการบันทึกรับชำระเข้ามาใหม่เร็ว ๆ นี้ ต้องเช็คซ้ำถี่กว่า)
 
-ทั้งสอง cache **ไม่ cache ผล error** (network/API ล้มเหลว) เพื่อไม่ให้ค้างสถานะผิดพลาดไว้นาน
-เกินจำเป็น และ `forceRefresh=true` (ปุ่ม "รีเฟรช" ในหน้าเว็บหลัก, และเสมอใน Import Excel
-Report) จะข้าม cache ทั้งหมด ดึงสดใหม่จาก PEAK ทุกราย
+ผลคือ **ครั้งแรกที่ดึงช่วงวันที่หนึ่งจะช้าที่สุดเสมอ** (ทุกใบเป็น cache miss ทั้ง contact
+และ journal) ครั้งต่อไปที่ดึงช่วงวันที่เดิม (หรือช่วงที่คาบเกี่ยวกัน) จะเร็วขึ้นมากเพราะ
+ส่วนใหญ่มาจาก cache — ทั้งสอง cache **ไม่ cache ผล error** (network/API ล้มเหลว) เพื่อไม่ให้
+ค้างสถานะผิดพลาดไว้นานเกินจำเป็น และ `forceRefresh=true` (ปุ่ม "รีเฟรช" ในหน้าเว็บหลัก, และ
+เสมอใน Import Excel Report) จะข้าม cache ทั้งหมด ดึงสดใหม่จาก PEAK ทุกราย
 
 ## Resilience
 - `PeakClient` (`lib/peakClient.ts`) มี **auto-retry + exponential backoff** (2,4,8,16s) เมื่อเจอ
   resCode 600 (token ติด throttle) — POST ปิด network-retry เพื่อกัน double-send
-- ปรับ `CONTACT_FETCH_WORKERS` ให้ต่ำลงได้ถ้าเจอ resCode 600 บ่อย (ค่าเริ่มต้น 12 — คุม
-  ความขนานของการตรวจ contact)
+- ปรับ `CONTACT_FETCH_WORKERS`/`JOURNAL_FETCH_WORKERS`/`RECEIPT_PAGE_CONCURRENCY` ให้ต่ำลงได้
+  ถ้าเจอ resCode 600 บ่อย (ดูตารางด้านบน)
 - **`getPeakClient()` ใช้ client เดียว (และ Client-Token เดียว) ร่วมกันทั้ง process** ผ่าน
   singleton บน `globalThis` แทนที่จะ `new PeakClient()` ต่อ request — PEAK อนุญาต
   Client-Token ที่ valid ได้ครั้งละ 1 ตัวต่อ connectId เท่านั้น มินต์ token ใหม่ต่อ request

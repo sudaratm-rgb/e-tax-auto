@@ -18,12 +18,15 @@ export async function POST(req: NextRequest) {
   const forceRefresh: boolean = Boolean(body.forceRefresh);
 
   const client = getPeakClient();
+  const startedAt = Date.now();
+  console.log(`[fetch] เริ่ม ${dateStart}-${dateEnd} (forceRefresh=${forceRefresh})`);
   let rows;
   try {
     // sent ไม่ขึ้นกับ receipts -> ยิงขนานไปพร้อมกันตั้งแต่ต้น แทนที่จะรอทีละขั้น
     const sentPromise = sendLog.sentCodes();
 
     const receipts = await client.listAllReceipts(dateStart, dateEnd, LIST_STATUS_APPROVE);
+    console.log(`[fetch] ได้ใบเสร็จ ${receipts.length} ใบ — เริ่มตรวจ contact/journal`);
     // ยิงพร้อมกัน: ดึง contact (dedup ได้) + เช็ค journal ต่อใบ (dedup ไม่ได้) เป็นคนละงาน
     // ไม่ขึ้นกัน ไม่ต้องรอทีละขั้น
     const [contactCache, journalMap, sent] = await Promise.all([
@@ -32,10 +35,12 @@ export async function POST(req: NextRequest) {
       sentPromise,
     ]);
     rows = receipts.map((r) => buildRow(r, contactCache, sent, journalMap));
+    console.log(`[fetch] เสร็จสิ้น ${rows.length} แถว (${((Date.now() - startedAt) / 1000).toFixed(1)}s รวม)`);
     // บันทึกลง PostgreSQL แบบ fire-and-forget (audit trail เสริม ไม่บล็อกการตอบกลับ
     // และไม่ทำให้ request พังถ้าต่อ DB ไม่ได้ — ดู safeDbWrite ใน lib/db.ts)
     void logReceiptChecks(rows);
   } catch (exc) {
+    console.log(`[fetch] ล้มเหลวหลัง ${((Date.now() - startedAt) / 1000).toFixed(1)}s:`, exc);
     if (exc instanceof PeakAPIError) {
       return NextResponse.json({ error: exc.message }, { status: 502 });
     }

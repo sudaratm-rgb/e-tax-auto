@@ -258,21 +258,28 @@ export class PeakClient {
   ): Promise<Receipt[]> {
     const first = await this.listReceiptsPage(dateStart, dateEnd, status, pageSize, 1);
     if (first.rows.length < pageSize || first.total <= pageSize) {
+      console.log(`[receipts-list] พบ ${first.rows.length} ใบ (1 หน้า)`);
       return first.rows;
     }
 
     const totalPages = Math.min(maxPages, Math.ceil(first.total / pageSize));
     const remainingPages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+    console.log(
+      `[receipts-list] พบทั้งหมด ${first.total} ใบ / ${totalPages} หน้า — เริ่มดึงหน้าที่เหลือ ${remainingPages.length} หน้า`
+    );
 
-    const PAGE_CONCURRENCY = 6;
+    const PAGE_CONCURRENCY = settings.RECEIPT_PAGE_CONCURRENCY;
     const restRows: Receipt[][] = new Array(remainingPages.length);
     let next = 0;
+    let pagesDone = 0;
     const worker = async () => {
       while (true) {
         const i = next++;
         if (i >= remainingPages.length) return;
         const { rows } = await this.listReceiptsPage(dateStart, dateEnd, status, pageSize, remainingPages[i]);
         restRows[i] = rows;
+        pagesDone++;
+        console.log(`[receipts-list] หน้า ${pagesDone}/${remainingPages.length} เสร็จแล้ว`);
       }
     };
     await Promise.all(Array.from({ length: Math.min(PAGE_CONCURRENCY, remainingPages.length) }, worker));

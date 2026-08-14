@@ -15,17 +15,24 @@ const globalForDb = globalThis as unknown as {
   __pgSchemaReady?: Promise<void>;
 };
 
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
 /**
  * ผู้ให้บริการ Postgres แบบ cloud (Supabase/Neon ฯลฯ) มักส่ง cert chain ที่ root CA ไม่อยู่ใน
  * ชุดที่ Node เชื่อถือ default (self-signed/intermediate) — เจอจริงกับ Supabase pooler:
  * "self-signed certificate in certificate chain" แม้ตั้ง sslmode=require ไว้แล้วก็ตาม เพราะ
  * pg-connection-string เวอร์ชันปัจจุบันเริ่มตีความ require/prefer เป็น verify-full (ตรวจ cert
  * เต็มรูปแบบ) — ต้องบังคับใช้ความหมายเดิมของ libpq (เข้ารหัสอย่างเดียว ไม่ verify cert) ผ่าน
- * uselibpqcompat=true ถึงจะต่อผ่าน ไม่งั้นต่อไม่ติดทั้ง local และตอน deploy จริงบน Vercel
+ * uselibpqcompat=true ถึงจะต่อผ่าน
+ *
+ * ใช้เฉพาะตอนต่อ host ที่ไม่ใช่ local เท่านั้น — Postgres ที่รันบนเครื่องเอง (127.0.0.1) ปกติ
+ * ไม่ได้เปิด SSL ไว้ บังคับ sslmode=require ใส่ไปจะพังทันที ("server does not support SSL
+ * connections") จึงต้องแยกกรณี local ออกไปเลย ไม่แตะ connection string
  */
 function normalizeConnectionString(raw: string): string {
   try {
     const url = new URL(raw);
+    if (LOCAL_HOSTS.has(url.hostname)) return raw;
     if (!url.searchParams.has("uselibpqcompat")) url.searchParams.set("uselibpqcompat", "true");
     if (!url.searchParams.has("sslmode")) url.searchParams.set("sslmode", "require");
     return url.toString();
@@ -68,9 +75,10 @@ export async function getDb(): Promise<Pool> {
 }
 
 /**
- * ใช้ห่อการเขียนลง DB ทุกจุด — ถ้าต่อ DB ไม่ได้หรือ query พลาด จะ log แค่ warning
- * ไม่ throw ต่อ เพราะ DB เป็นแค่ audit trail เสริม ไม่ใช่แหล่งความจริงหลักตอนนี้
- * (ไฟล์ .jsonl ที่เขียนคู่ขนานกันคือแหล่งความจริงหลักเหมือนเดิม)
+ * ใช้ห่อการเขียนลง DB ที่เป็น audit/cache เสริมเท่านั้น (receipt_checks, contact_cache,
+ * receipt_journal_cache) — ถ้าต่อ DB ไม่ได้หรือ query พลาด จะ log แค่ warning ไม่ throw ต่อ
+ * เพราะไม่ใช่แหล่งความจริงหลัก (ต่างจาก send_log/etax_callbacks ใน lib/sendLog.ts ที่ throw
+ * ตรง ๆ เพราะเป็นสำเนาเดียวของ "ใบนี้ส่งแล้วหรือยัง")
  */
 export async function safeDbWrite(fn: (db: Pool) => Promise<void>): Promise<void> {
   try {

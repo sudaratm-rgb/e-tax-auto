@@ -14,21 +14,36 @@ function contactKey(receipt: Receipt): string {
   return receipt.contactId || receipt.contactCode || "";
 }
 
-/** จำกัดจำนวนงานที่รันพร้อมกัน (เทียบเท่า ThreadPoolExecutor(max_workers=)) */
+/**
+ * จำกัดจำนวนงานที่รันพร้อมกัน (เทียบเท่า ThreadPoolExecutor(max_workers=))
+ * label (ถ้าใส่): log ความคืบหน้าลง console ทุก ๆ ~5% ของงาน — ช่วยแยกแยะระหว่าง "กำลังทำงาน
+ * อยู่แต่ช้าเพราะข้อมูลเยอะ" กับ "ค้างจริง" ตอน debug ช่วงวันที่กว้างที่ใช้เวลานาน
+ */
 export async function mapWithConcurrency<T, R>(
   items: T[],
   workers: number,
-  fn: (item: T) => Promise<R>
+  fn: (item: T) => Promise<R>,
+  label?: string
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
+  const total = items.length;
   let next = 0;
+  let done = 0;
+  const start = Date.now();
+  const logEvery = Math.max(1, Math.ceil(total / 20));
   async function worker() {
     while (true) {
       const i = next++;
       if (i >= items.length) return;
       results[i] = await fn(items[i]);
+      done++;
+      if (label && (done % logEvery === 0 || done === total)) {
+        const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+        console.log(`[${label}] ${done}/${total} เสร็จแล้ว (${elapsed}s, concurrency=${workers})`);
+      }
     }
   }
+  if (label) console.log(`[${label}] เริ่ม ${total} รายการ (concurrency=${workers})`);
   await Promise.all(Array.from({ length: Math.min(workers, items.length) }, worker));
   return results;
 }
@@ -56,6 +71,7 @@ export async function fetchContacts(
     }
   }
 
+  console.log(`[contact] ${unique.size} contact ไม่ซ้ำจาก ${receipts.length} ใบเสร็จ — เริ่มเช็ค cache`);
   // เช็ค cache ทุก key แบบขนาน (เร็ว เพราะเป็น local memory/DB query ไม่ใช่ PEAK API
   // ที่ต้อง rate-limit เหมือนขั้นตอนดึงจริงด้านล่าง) — ข้ามขั้นนี้ทั้งหมดถ้า forceRefresh
   const lookups = forceRefresh
@@ -72,17 +88,23 @@ export async function fetchContacts(
       toFetch.push([key, ref]);
     }
   }
+  console.log(`[contact] cache hit ${cache.size}/${unique.size} — ต้องยิง PEAK จริง ${toFetch.length} ราย`);
 
-  const fetched = await mapWithConcurrency(toFetch, workers, async ([key, ref]) => {
-    try {
-      const contact = (await client.getContact(ref.code, ref.id)) ?? {};
-      setCachedContact(key, contact);
-      return [key, contact] as const;
-    } catch (exc) {
-      const message = exc instanceof PeakAPIError ? exc.message : String(exc);
-      return [key, { __error__: message }] as const; // ไม่ cache ผล error
-    }
-  });
+  const fetched = await mapWithConcurrency(
+    toFetch,
+    workers,
+    async ([key, ref]) => {
+      try {
+        const contact = (await client.getContact(ref.code, ref.id)) ?? {};
+        setCachedContact(key, contact);
+        return [key, contact] as const;
+      } catch (exc) {
+        const message = exc instanceof PeakAPIError ? exc.message : String(exc);
+        return [key, { __error__: message }] as const; // ไม่ cache ผล error
+      }
+    },
+    "contact"
+  );
   for (const [key, contact] of fetched) cache.set(key, contact);
   return cache;
 }
@@ -98,10 +120,11 @@ export async function fetchContacts(
 export async function fetchReceiptJournals(
   client: PeakClient,
   receipts: Receipt[],
-  workers: number = settings.CONTACT_FETCH_WORKERS,
+  workers: number = settings.JOURNAL_FETCH_WORKERS,
   forceRefresh: boolean = false
 ): Promise<Map<string, boolean | { __error__: string }>> {
   const codes = [...new Set(receipts.map((r) => r.code ?? "").filter(Boolean))];
+  console.log(`[journal] ${codes.length} ใบเสร็จ (dedup ไม่ได้ ต้องเช็คทุกใบ) — เริ่มเช็ค cache`);
 
   const lookups = forceRefresh
     ? codes.map((code) => [code, undefined] as const)
@@ -115,18 +138,24 @@ export async function fetchReceiptJournals(
       toFetch.push(code);
     }
   }
+  console.log(`[journal] cache hit ${result.size}/${codes.length} — ต้องยิง PEAK จริง ${toFetch.length} ราย`);
 
-  const fetched = await mapWithConcurrency(toFetch, workers, async (code) => {
-    try {
-      const full = await client.getReceipt(code);
-      const hasJournal = Array.isArray(full?.journals) && full!.journals.length > 0;
-      setCachedReceiptJournal(code, hasJournal);
-      return [code, hasJournal] as const;
-    } catch (exc) {
-      const message = exc instanceof PeakAPIError ? exc.message : String(exc);
-      return [code, { __error__: message }] as const; // ไม่ cache ผล error
-    }
-  });
+  const fetched = await mapWithConcurrency(
+    toFetch,
+    workers,
+    async (code) => {
+      try {
+        const full = await client.getReceipt(code);
+        const hasJournal = Array.isArray(full?.journals) && full!.journals.length > 0;
+        setCachedReceiptJournal(code, hasJournal);
+        return [code, hasJournal] as const;
+      } catch (exc) {
+        const message = exc instanceof PeakAPIError ? exc.message : String(exc);
+        return [code, { __error__: message }] as const; // ไม่ cache ผล error
+      }
+    },
+    "journal"
+  );
   for (const [code, v] of fetched) result.set(code, v);
   return result;
 }
