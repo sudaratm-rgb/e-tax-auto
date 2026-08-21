@@ -145,11 +145,11 @@ export default function Home() {
         const es = etaxStatus[r.code];
         const { filterBucket, display } = classifyRow(r, es);
         // ยังไม่เคยมีผลส่งจริง (es.status "unknown"/ไม่มี es เลย) -> โชว์เหตุผลจากการตรวจ
-        // contact/journal/approve (r.reason) เพราะเป็นข้อมูล actionable กว่า ส่วนที่เคยมีผลส่ง
+        // contact/approve (r.reason) เพราะเป็นข้อมูล actionable กว่า ส่วนที่เคยมีผลส่ง
         // จริงแล้ว (sent/pending/error จาก callback) ต้องยึด es.message เสมอ ไม่ว่า r.valid ณ
         // ตอนนี้จะเป็นอะไรก็ตาม — เพราะ es.message สะท้อนผลจริงจาก INET/callback ส่วน r.valid
         // สะท้อนแค่ผลตรวจสอบข้อมูล ณ ตอนดึงครั้งนี้เท่านั้น ถ้าใบเคยออกสำเร็จไปแล้วจริง แต่
-        // ข้อมูลตอนนี้ดันไม่ผ่าน (เช่น journal ถูกแก้ทีหลัง) ก็ต้องยังโชว์ "Success" ไม่ใช่
+        // ข้อมูลตอนนี้ดันไม่ผ่าน (เช่น contact ถูกแก้ทีหลัง) ก็ต้องยังโชว์ "Success" ไม่ใช่
         // ข้อความจากการตรวจสอบครั้งนี้ที่ทำให้ดูขัดแย้งกับ badge "Sent"
         const hasRealSendResult = Boolean(es) && es!.status !== "unknown";
         const noteText = hasRealSendResult ? es!.message || r.reason : r.reason;

@@ -16,12 +16,10 @@ export const maxDuration = 300;
  * มักมีใบส่งแล้วเยอะกว่าใบใหม่มาก การข้ามขั้นนี้ลดจำนวน contact ที่ต้องดึง/เช็ค cache ได้เยอะ
  * (ดู buildRow ใน lib/receipts.ts ที่ short-circuit ไม่เรียก validateContact ให้ใบกลุ่มนี้)
  *
- * ⚠️ ตารางหลักนี้ไม่เช็ค journal (บันทึกรับชำระ) — ตั้งใจถอดออกเพราะเช็คไม่ได้โดยไม่ยิง
- * GET /Receipts?code= แยกทีละใบเพิ่ม (dedup ไม่ได้เหมือน contact) ซึ่งเป็นคอขวดหลักตอนดึง
- * ช่วงวันที่กว้าง (นับพันใบ = ต้องยิงนับพันครั้ง) journal check ยังใช้อยู่ที่ Import Excel
- * Report (`/api/import-report`) ซึ่งดึงใบเสร็จเต็มอยู่แล้วเพื่อจุดประสงค์อื่น เลยเช็คได้ "ฟรี"
- * ไม่มี API เพิ่ม — ส่วน `/api/send-etax` ตอนกดส่งจริงยังตรวจ Approve ซ้ำเหมือนเดิม (คนละ
- * เงื่อนไขกับ journal)
+ * ⚠️ ไม่เช็ค journal (บันทึกรับชำระ) เลยไม่ว่าจุดไหนในระบบ — ตั้งใจถอดออกหมด (ทั้งตารางหลัก
+ * และ Import Excel Report) เพราะเช็คไม่ได้โดยไม่ยิง GET /Receipts?code= แยกทีละใบเพิ่ม (dedup
+ * ไม่ได้เหมือน contact) ซึ่งเป็นคอขวดหลักตอนดึงช่วงวันที่กว้าง (นับพันใบ = ต้องยิงนับพันครั้ง)
+ * — `/api/send-etax` ตอนกดส่งจริงก็ไม่เคยเช็ค journal เช่นกัน ยังตรวจแค่ Approve ซ้ำเหมือนเดิม
  */
 export async function POST(req: NextRequest) {
   const body = await req.json();
