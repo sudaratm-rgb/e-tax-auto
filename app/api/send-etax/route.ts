@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { settings } from "@/lib/config";
 import { getPeakClient, PeakAPIError } from "@/lib/peakClient";
-import { fetchApprovedCodes } from "@/lib/receipts";
+import { fetchApprovedCodes, type ContactType } from "@/lib/receipts";
 import * as sendLog from "@/lib/sendLog";
 
 interface SendResult {
@@ -21,6 +21,10 @@ interface SendResult {
  * หมายเหตุ: เดิมเคยเช็คสถานะชำระเงิน (remainAmount) ด้วย แต่ถอดออกแล้ว — remainAmount
  * ของ GET /Receipts?code= ไม่อัปเดตให้ทันแม้มี paidPayments บันทึกครบวันเดียวกับที่จ่ายจริง
  * (เจอ 2 เคสติดกัน: RE26072241, RE26072955) ทำให้บล็อกใบที่จ่ายแล้วผิด ๆ
+ *
+ * contacts (ไม่บังคับ): map code -> {name, type} ที่ client แนบมาให้ (จากข้อมูล contact ที่
+ * ตารางหลักดึงมาแล้วตอน /api/fetch) — บันทึกลง send_log เก็บไว้แสดงย้อนหลัง เพราะใบที่ส่ง
+ * สำเร็จแล้วตอนนี้ไม่ถูกดึง contact ซ้ำอีก (ดู lib/receipts.ts) ไม่งั้นชื่อ/ประเภทจะหายไปเลย
  */
 // อาจเลือกส่งหลายสิบใบพร้อมกัน แต่ละใบมีเช็ค Approve ก่อนเสมอ (ยิง API เพิ่ม) — ค่า default
 // ของ Vercel สั้นเกินไปถ้าเลือกจำนวนมาก
@@ -31,6 +35,8 @@ export async function POST(req: NextRequest) {
   const codes: string[] = body.codes ?? [];
   const force: boolean = body.force ?? false;
   const callbackUrl: string = body.callbackUrl || settings.ETAX_CALLBACK_URL;
+  const contacts: Record<string, { name?: string; type?: ContactType }> =
+    body.contacts && typeof body.contacts === "object" ? body.contacts : {};
 
   const results: SendResult[] = [];
   const already = force ? new Set<string>() : await sendLog.sentCodes();
@@ -78,7 +84,10 @@ export async function POST(req: NextRequest) {
         const resp = await client.sendEtaxInvoice({ code, callbackUrl, keyReference: code });
         const resCode = String(resp.resCode ?? "200");
         const resDesc = resp.resDesc ?? "ส่งสำเร็จ";
-        await sendLog.record(code, true, resCode, resDesc);
+        await sendLog.record(code, true, resCode, resDesc, "accepted", {
+          contactName: contacts[code]?.name,
+          contactType: contacts[code]?.type,
+        });
         results.push({ code, success: true, message: resDesc });
       } catch (exc) {
         if (!(exc instanceof PeakAPIError)) throw exc; // config ไม่ครบ -> 500 ทั้ง request

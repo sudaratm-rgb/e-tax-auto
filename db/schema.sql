@@ -21,20 +21,26 @@ CREATE TABLE IF NOT EXISTS receipt_checks (
 );
 CREATE INDEX IF NOT EXISTS idx_receipt_checks_code ON receipt_checks (code, checked_at DESC);
 
--- ประวัติการส่ง e-Tax ทุกครั้ง (คู่ขนานกับ sent_log.jsonl)
+-- ประวัติการส่ง e-Tax ทุกครั้ง — แหล่งความจริงหลักของ "ใบนี้ส่งแล้วหรือยัง" (ดู lib/sendLog.ts)
 CREATE TABLE IF NOT EXISTS send_log (
-  id          BIGSERIAL PRIMARY KEY,
-  code        TEXT NOT NULL,
-  success     BOOLEAN NOT NULL,
-  res_code    TEXT,
-  res_desc    TEXT,
-  phase       TEXT NOT NULL,   -- accepted | callback
-  pdf_url     TEXT,
-  pdf_a3_url  TEXT,
-  xml_url     TEXT,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  id            BIGSERIAL PRIMARY KEY,
+  code          TEXT NOT NULL,
+  success       BOOLEAN NOT NULL,
+  res_code      TEXT,
+  res_desc      TEXT,
+  phase         TEXT NOT NULL,   -- accepted | callback
+  pdf_url       TEXT,
+  pdf_a3_url    TEXT,
+  xml_url       TEXT,
+  contact_name  TEXT,            -- client แนบมาให้ตอนกดส่ง/ยืนยันด้วยมือ (ไม่บังคับ)
+  contact_type  TEXT,            -- juristic | ordinary | unknown — เหมือนกัน
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_send_log_code ON send_log (code, created_at DESC);
+-- ALTER แยกไว้เผื่อ DB เดิมมีตาราง send_log อยู่แล้วก่อนคอลัมน์เหล่านี้ถูกเพิ่ม (CREATE TABLE IF
+-- NOT EXISTS ด้านบนจะไม่มีผลกับตารางที่มีอยู่แล้ว)
+ALTER TABLE send_log ADD COLUMN IF NOT EXISTS contact_name TEXT;
+ALTER TABLE send_log ADD COLUMN IF NOT EXISTS contact_type TEXT;
 
 -- payload ดิบทุกครั้งที่ได้ callback จาก PEAK/INET (คู่ขนานกับ etax_callback.jsonl)
 CREATE TABLE IF NOT EXISTS etax_callbacks (

@@ -45,9 +45,11 @@ export async function POST(req: NextRequest) {
     // ออกใบสำเร็จ (resCode 200) จะมี field `eTaxInvoice` แนบลิงก์เอกสารจริงมาด้วย
     const eTaxInvoice = payload.eTaxInvoice ?? {};
     await sendLog.record(keyReference, success, resCode, desc, "callback", {
-      pdfUrl: eTaxInvoice.pdfDocument,
-      pdfA3Url: eTaxInvoice.pdfA3Document,
-      xmlUrl: eTaxInvoice.xmlDocument,
+      documents: {
+        pdfUrl: eTaxInvoice.pdfDocument,
+        pdfA3Url: eTaxInvoice.pdfA3Document,
+        xmlUrl: eTaxInvoice.xmlDocument,
+      },
     });
   }
   return NextResponse.json({ ok: true });

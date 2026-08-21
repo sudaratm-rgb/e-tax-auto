@@ -265,11 +265,20 @@ export default function Home() {
     // ตั้ง notice ทันทีก่อนยิง request — ไม่งั้นระหว่างรอ PEAK ตอบ (ตรวจ Approve + ส่งทีละใบ
     // อาจใช้เวลาหลายวินาทีถึงหลักนาทีถ้าเลือกหลายใบ) หน้าจอจะว่างเปล่า ดูเหมือนค้าง
     setNotice({ kind: "info", text: `กำลังส่ง e-Tax ${codes.length} ใบ...` });
+    // แนบชื่อ/ประเภทลูกค้าที่รู้อยู่แล้ว (จาก /api/fetch รอบนี้) ไปให้ server บันทึกด้วย —
+    // เก็บไว้กันชื่อ/ประเภทหายหลังใบนี้ถูกข้ามการดึง contact ซ้ำในครั้งถัดไป (ดู lib/receipts.ts)
+    const contacts: Record<string, { name?: string; type?: string }> = {};
+    for (const code of codes) {
+      const r = classified.find((x) => x.code === code);
+      if (r && (r.contactName || r.contactType !== "unknown")) {
+        contacts[code] = { name: r.contactName || undefined, type: r.contactType };
+      }
+    }
     try {
       const res = await fetch("/api/send-etax", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codes }),
+        body: JSON.stringify({ codes, contacts }),
       });
       const json = await res.json();
       if (!res.ok) {
@@ -317,10 +326,15 @@ export default function Home() {
     setResending(true);
     setNotice({ kind: "info", text: `กำลังบันทึกสถานะใบ ${code}...` });
     try {
+      // แนบชื่อ/ประเภทลูกค้าที่รู้อยู่แล้วไปด้วย (ตอนนี้ต้องยังไม่ alreadySent ถึงจะกดปุ่มนี้ได้
+      // — แปลว่า contact ถูกดึงมาแล้วจริงตามปกติ) เก็บไว้กันข้อมูลหายหลังใบนี้ถูกข้ามการดึง
+      // contact ซ้ำในครั้งถัดไป (ดู lib/receipts.ts)
+      const r = classified.find((x) => x.code === code);
+      const contacts = r ? { [code]: { name: r.contactName || undefined, type: r.contactType } } : undefined;
       const res = await fetch("/api/mark-sent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ code, contacts }),
       });
       if (!res.ok) {
         const json = await res.json().catch(() => ({}));
@@ -352,10 +366,15 @@ export default function Home() {
     setNotice({ kind: "info", text: `กำลังบันทึกสถานะ ${selected.size} ใบ...` });
     try {
       const codes = [...selected];
+      const contacts: Record<string, { name?: string; type?: string }> = {};
+      for (const c of codes) {
+        const r = classified.find((x) => x.code === c);
+        if (r) contacts[c] = { name: r.contactName || undefined, type: r.contactType };
+      }
       const res = await fetch("/api/mark-sent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codes }),
+        body: JSON.stringify({ codes, contacts }),
       });
       if (!res.ok) {
         const json = await res.json().catch(() => ({}));

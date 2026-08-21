@@ -123,13 +123,15 @@ export async function fetchApprovedCodes(
 export type ContactType = "juristic" | "ordinary" | "unknown";
 
 /** จัดกลุ่ม contact.type จริงจาก PEAK เป็น นิติบุคคล (juristic) / บุคคลธรรมดา (ordinary) */
-function contactTypeOf(contact: Contact): ContactType {
+/** fallback: ใช้ตอน contact ไม่มีข้อมูล type จริง (เช่น ไม่ได้ถูกดึงมาเลย) แต่มีประเภทที่เคย
+ * บันทึกไว้จากที่อื่นให้ใช้แทนได้ (ดู buildRow — sentContacts) */
+function contactTypeOf(contact: Contact, fallback?: ContactType): ContactType {
   const ctype = contact.type;
   if (settings.CONTACT_TYPES_INDIVIDUAL.has(ctype)) return "ordinary";
   if (settings.CONTACT_TYPES_FULL_TAX.has(ctype) || settings.CONTACT_TYPES_FULL_NOTAX.has(ctype)) {
     return "juristic";
   }
-  return "unknown";
+  return fallback ?? "unknown";
 }
 
 export interface Row {
@@ -176,22 +178,28 @@ export interface Row {
  * มาด้วยซ้ำ (ดู /api/fetch ที่ข้ามการดึง contact ให้ใบกลุ่มนี้ไปเลยเพื่อความเร็ว) ถ้าไม่
  * short-circuit ตรงนี้ก่อน จะได้ผล "ไม่ผ่าน" ปลอม ๆ จาก contact ว่างเปล่า ทั้งที่จริง ๆ คือ
  * ไม่ได้ตรวจต่างหาก ไม่ใช่ปัญหาข้อมูลจริง
+ *
+ * sentContacts (ไม่บังคับ): map code -> {name, type} ที่เคยบันทึกไว้ตอนกดส่งจริงหรือยืนยัน
+ * ด้วยมือ (ดู lib/sendLog.ts) ใช้เป็น fallback ตอน contact ไม่ถูกดึง (alreadySent) เพื่อให้ยัง
+ * เห็นชื่อ/ประเภทลูกค้าได้บ้าง แทนที่จะว่างเปล่า/"ไม่ทราบ" เสมอ
  */
 export function buildRow(
   receipt: Receipt,
   contactCache: Map<string, Contact | { __error__: string }>,
-  sent: Set<string>
+  sent: Set<string>,
+  sentContacts?: Map<string, { name?: string; type?: ContactType }>
 ): Row {
   const code = receipt.code ?? "";
   const alreadySent = sent.has(code);
   const contact = contactCache.get(contactKey(receipt)) ?? {};
+  const fallback = alreadySent ? sentContacts?.get(code) : undefined;
   const row: Row = {
     code,
     issuedDate: receipt.issuedDate ?? "",
     netAmount: receipt.netAmount,
     contactCode: (contact as Contact).code ?? receipt.contactCode ?? "",
-    contactName: (contact as Contact).name ?? "",
-    contactType: "__error__" in contact ? "unknown" : contactTypeOf(contact as Contact),
+    contactName: (contact as Contact).name ?? fallback?.name ?? "",
+    contactType: "__error__" in contact ? "unknown" : contactTypeOf(contact as Contact, fallback?.type),
     address: (contact as Contact).address ?? "",
     subDistrict: (contact as Contact).subDistrict ?? "",
     district: (contact as Contact).district ?? "",

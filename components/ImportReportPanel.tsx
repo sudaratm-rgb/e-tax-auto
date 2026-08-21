@@ -251,10 +251,18 @@ export function ImportReportPanel() {
       return;
     setReconciling(true);
     try {
+      // แนบชื่อลูกค้าที่รู้จากไฟล์ Excel ไปด้วย (ไฟล์ไม่มีข้อมูลประเภทลูกค้า) เก็บไว้ใน send_log
+      // เพราะใบเหล่านี้ตอนนี้ไม่ถูกดึง contact ซ้ำอีกแล้ว (ดู lib/receipts.ts) ไม่งั้นชื่อจะ
+      // หายไปเลยหลังปิดหน้าเว็บนี้
+      const contacts: Record<string, { name?: string }> = {};
+      for (const code of result.needsReconcile) {
+        const name = result.rows.find((r) => r.code === code)?.customerName;
+        if (name) contacts[code] = { name };
+      }
       const res = await fetch("/api/mark-sent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codes: result.needsReconcile }),
+        body: JSON.stringify({ codes: result.needsReconcile, contacts }),
       });
       if (!res.ok) {
         const json = await res.json().catch(() => ({}));
