@@ -59,6 +59,11 @@ export function DetailPanel({ row, onClose, onResend, onMarkSent, resending }: P
                   {row.contactType === "juristic" ? "นิติบุคคล" : row.contactType === "ordinary" ? "บุคคลธรรมดา" : "ไม่ทราบ"}
                 </span>
               </div>
+              {row.alreadySent && !row.contactName && (
+                <div className="notice" style={{ marginBottom: 12 }}>
+                  ใบนี้ส่งสำเร็จแล้ว ระบบข้ามการดึงข้อมูลลูกค้าเพิ่มเพื่อความเร็ว (ไม่ใช่ข้อมูลหาย)
+                </div>
+              )}
               <dl className="kv">
                 <dt>ลูกค้า</dt>
                 <dd>{row.contactName || "-"}</dd>
@@ -108,7 +113,15 @@ export function DetailPanel({ row, onClose, onResend, onMarkSent, resending }: P
                 <div style={{ display: "flex", gap: 8, marginTop: 18, flexWrap: "wrap" }}>
                   {selectable && (
                     <button className="btn primary" disabled={resending} onClick={() => onResend(row.code)}>
-                      <Icon.Send size={14} /> ส่ง e-Tax ใบนี้
+                      {resending ? (
+                        <>
+                          <Icon.Refresh size={14} className="spin" /> กำลังทำงาน...
+                        </>
+                      ) : (
+                        <>
+                          <Icon.Send size={14} /> ส่ง e-Tax ใบนี้
+                        </>
+                      )}
                     </button>
                   )}
                   {row.pdfUrl && (
@@ -118,7 +131,15 @@ export function DetailPanel({ row, onClose, onResend, onMarkSent, resending }: P
                   )}
                   {canMarkSent && (
                     <button className="btn ghost" disabled={resending} onClick={() => onMarkSent(row.code)}>
-                      <Icon.Check size={14} /> ยืนยันว่าส่งแล้ว (เช็คใน PEAK UI)
+                      {resending ? (
+                        <>
+                          <Icon.Refresh size={14} className="spin" /> กำลังทำงาน...
+                        </>
+                      ) : (
+                        <>
+                          <Icon.Check size={14} /> ยืนยันว่าส่งแล้ว (เช็คใน PEAK UI)
+                        </>
+                      )}
                     </button>
                   )}
                 </div>

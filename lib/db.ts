@@ -3,8 +3,8 @@
  * เพราะ deploy บน Vercel แล้ว filesystem ของโปรเจกต์ read-only ตอนรันจริง เขียนไฟล์ .jsonl
  * แบบเดิมไม่ได้อีกต่อไป — DATABASE_URL จึงจำเป็นเสมอ ไม่ใช่แค่เสริมแล้ว
  *
- * ตารางอื่น (receipt_checks, contact_cache, receipt_journal_cache) ยังเป็น audit/cache เสริม
- * เหมือนเดิม เขียนผ่าน safeDbWrite() ที่ไม่ throw ถ้าพลาด เพราะไม่ใช่แหล่งความจริงหลัก
+ * ตารางอื่น (receipt_checks, contact_cache) ยังเป็น audit/cache เสริมเหมือนเดิม เขียนผ่าน
+ * safeDbWrite() ที่ไม่ throw ถ้าพลาด เพราะไม่ใช่แหล่งความจริงหลัก
  */
 import { readFileSync } from "fs";
 import path from "path";
@@ -75,10 +75,10 @@ export async function getDb(): Promise<Pool> {
 }
 
 /**
- * ใช้ห่อการเขียนลง DB ที่เป็น audit/cache เสริมเท่านั้น (receipt_checks, contact_cache,
- * receipt_journal_cache) — ถ้าต่อ DB ไม่ได้หรือ query พลาด จะ log แค่ warning ไม่ throw ต่อ
- * เพราะไม่ใช่แหล่งความจริงหลัก (ต่างจาก send_log/etax_callbacks ใน lib/sendLog.ts ที่ throw
- * ตรง ๆ เพราะเป็นสำเนาเดียวของ "ใบนี้ส่งแล้วหรือยัง")
+ * ใช้ห่อการเขียนลง DB ที่เป็น audit/cache เสริมเท่านั้น (receipt_checks, contact_cache) —
+ * ถ้าต่อ DB ไม่ได้หรือ query พลาด จะ log แค่ warning ไม่ throw ต่อ เพราะไม่ใช่แหล่งความจริงหลัก
+ * (ต่างจาก send_log/etax_callbacks ใน lib/sendLog.ts ที่ throw ตรง ๆ เพราะเป็นสำเนาเดียวของ
+ * "ใบนี้ส่งแล้วหรือยัง")
  */
 export async function safeDbWrite(fn: (db: Pool) => Promise<void>): Promise<void> {
   try {

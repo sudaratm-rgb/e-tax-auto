@@ -30,25 +30,44 @@ function isFresh(fetchedAt: number): boolean {
   return Date.now() - fetchedAt <= TTL_MS;
 }
 
-/** คืน contact ที่ cache ไว้ ถ้ายังไม่หมดอายุ (เช็คแรมก่อน แล้วค่อย DB) — undefined = cache miss */
-export async function getCachedContact(key: string): Promise<Contact | undefined> {
-  const mem = getMemCache().get(key);
-  if (mem && isFresh(mem.fetchedAt)) return mem.contact;
+/** คืน map ของ contact ที่แคชไว้แบบ batch โดยดึงจากแรมก่อน และยิง DB ด้วย SQL เดียวสำหรับ key ที่ขาด */
+export async function getCachedContactsBatch(keys: string[]): Promise<Map<string, Contact>> {
+  const result = new Map<string, Contact>();
+  if (keys.length === 0) return result;
 
-  if (!process.env.DATABASE_URL) return undefined;
+  const memCache = getMemCache();
+  const missingKeys: string[] = [];
+
+  for (const key of keys) {
+    const mem = memCache.get(key);
+    if (mem && isFresh(mem.fetchedAt)) {
+      result.set(key, mem.contact);
+    } else {
+      missingKeys.push(key);
+    }
+  }
+
+  if (missingKeys.length === 0 || !process.env.DATABASE_URL) {
+    return result;
+  }
+
   try {
     const db = await getDb();
-    const res = await db.query<{ contact: Contact; fetched_at: Date }>(
-      "SELECT contact, fetched_at FROM contact_cache WHERE key = $1",
-      [key]
+    const res = await db.query<{ key: string; contact: Contact; fetched_at: Date }>(
+      "SELECT key, contact, fetched_at FROM contact_cache WHERE key = ANY($1)",
+      [missingKeys]
     );
-    const row = res.rows[0];
-    if (!row || !isFresh(row.fetched_at.getTime())) return undefined;
-    getMemCache().set(key, { contact: row.contact, fetchedAt: row.fetched_at.getTime() }); // อุ่นแรมไว้ด้วย
-    return row.contact;
-  } catch {
-    return undefined; // DB ใช้ไม่ได้ตอนนี้ -> ถือเป็น cache miss ไปเลย ไม่บล็อกการทำงานหลัก
+    for (const row of res.rows) {
+      if (row.contact && isFresh(row.fetched_at.getTime())) {
+        memCache.set(row.key, { contact: row.contact, fetchedAt: row.fetched_at.getTime() });
+        result.set(row.key, row.contact);
+      }
+    }
+  } catch (err) {
+    console.warn("[contactCache] Batch lookup ล้มเหลว (ไม่บล็อกการทำงานหลัก):", err);
   }
+
+  return result;
 }
 
 export function setCachedContact(key: string, contact: Contact): void {

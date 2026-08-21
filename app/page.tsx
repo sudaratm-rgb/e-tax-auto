@@ -46,6 +46,21 @@ export default function Home() {
   const [sendLoading, setSendLoading] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
+  const [resending, setResending] = useState(false);
+
+  // นับเวลาระหว่างส่ง e-Tax / ยืนยันสถานะด้วยมือ เพื่อบอกว่ายังทำงานอยู่ ไม่ได้ค้าง — ผู้ใช้
+  // แจ้งว่าบางครั้งกดส่งแล้วไม่รู้ว่าระบบกำลังทำงานหรือไม่ (ปุ่มแค่จางลงเฉย ๆ ไม่มีข้อความ)
+  const busy = sendLoading || resending;
+  const [busyElapsed, setBusyElapsed] = useState(0);
+  useEffect(() => {
+    if (!busy) {
+      setBusyElapsed(0);
+      return;
+    }
+    const start = Date.now();
+    const id = setInterval(() => setBusyElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [busy]);
 
   // นับเวลาที่ใช้ดึงข้อมูล เพื่อบอกผู้ใช้ว่ายังทำงานอยู่ ไม่ได้ค้าง (บางช่วงวันที่ที่มีใบ
   // เยอะ + ตรวจ contact/ชำระเงินทีละใบ อาจใช้เวลาหลักนาที)
@@ -63,7 +78,6 @@ export default function Home() {
   const [typeFilter, setTypeFilter] = useState("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [detailCode, setDetailCode] = useState<string | null>(null);
-  const [resending, setResending] = useState(false);
 
   // กัน race condition: ถ้าเปลี่ยนช่วงวันที่ก่อนคำขอเก่า (ซึ่งอาจช้ากว่า เช่นดึงวันที่มีใบเยอะ)
   // จะได้ผลกลับมา คำขอเก่าต้องไม่ทับผลของคำขอใหม่ล่าสุด — ใช้เลขลำดับคำขอกำกับไว้เช็ค
@@ -248,7 +262,9 @@ export default function Home() {
   async function sendCodes(codes: string[]) {
     if (codes.length === 0) return;
     setSendLoading(true);
-    setNotice(null);
+    // ตั้ง notice ทันทีก่อนยิง request — ไม่งั้นระหว่างรอ PEAK ตอบ (ตรวจ Approve + ส่งทีละใบ
+    // อาจใช้เวลาหลายวินาทีถึงหลักนาทีถ้าเลือกหลายใบ) หน้าจอจะว่างเปล่า ดูเหมือนค้าง
+    setNotice({ kind: "info", text: `กำลังส่ง e-Tax ${codes.length} ใบ...` });
     try {
       const res = await fetch("/api/send-etax", {
         method: "POST",
@@ -299,6 +315,7 @@ export default function Home() {
   const onMarkSent = async (code: string) => {
     if (!confirm(`ยืนยันว่าใบ ${code} ออก e-Tax สำเร็จแล้วจริง (เช็คใน PEAK UI แล้ว)?\nการยืนยันนี้จะทำให้แอปแสดงสถานะ "ส่งสำเร็จ" ทันที`)) return;
     setResending(true);
+    setNotice({ kind: "info", text: `กำลังบันทึกสถานะใบ ${code}...` });
     try {
       const res = await fetch("/api/mark-sent", {
         method: "POST",
@@ -332,6 +349,7 @@ export default function Home() {
     )
       return;
     setResending(true);
+    setNotice({ kind: "info", text: `กำลังบันทึกสถานะ ${selected.size} ใบ...` });
     try {
       const codes = [...selected];
       const res = await fetch("/api/mark-sent", {
@@ -369,7 +387,8 @@ export default function Home() {
 
       {notice && (
         <div className={"notice" + (notice.kind === "err" ? " err" : "")}>
-          <Icon.Alert size={14} /> {notice.text}
+          {busy ? <Icon.Refresh size={14} className="spin" /> : <Icon.Alert size={14} />} {notice.text}
+          {busy && <span className="mono num"> ({busyElapsed} วินาที)</span>}
         </div>
       )}
 
@@ -427,6 +446,7 @@ export default function Home() {
         onSend={onSendSelected}
         onMarkSentSelected={onMarkSentSelected}
         sendLoading={sendLoading}
+        resending={resending}
       />
 
       <DetailPanel

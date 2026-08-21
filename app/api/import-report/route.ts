@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { getPeakClient, PeakAPIError } from "@/lib/peakClient";
 import { buildRow, fetchContacts, mapWithConcurrency } from "@/lib/receipts";
-import { setCachedReceiptJournal } from "@/lib/receiptDetailCache";
 import * as sendLog from "@/lib/sendLog";
 import type { Receipt } from "@/lib/peakClient";
 
@@ -12,9 +11,11 @@ import type { Receipt } from "@/lib/peakClient";
  * โดยตรงเลย (ตรวจสอบมาหลายทางแล้วในเซสชันนี้ — ไม่มีจริง ๆ)
  *
  * ทำ 2 อย่าง:
- *   1) แถวที่ "ยังไม่ส่ง" (Await) — ตรวจสอบข้อมูล contact + journal เหมือนตารางหลักทุก
- *      ประการ (ใช้ buildRow ตัวเดียวกันเป๊ะ) ก่อนคืนให้ฝั่ง client ตัดสินใจว่าติ๊กส่งได้ไหม
- *      กันไม่ให้ส่งใบที่ข้อมูลไม่ครบ/ผิด (เช่น เลขผู้เสียภาษีผิดรูปแบบ) ผ่านทางลัดนี้ไปได้
+ *   1) แถวที่ "ยังไม่ส่ง" (Await) — ตรวจสอบข้อมูล contact เหมือนตารางหลักทุกประการ (ใช้
+ *      buildRow ตัวเดียวกันเป๊ะ, ไม่เช็ค journal — ดู README หัวข้อ "เงื่อนไขการบันทึกรับชำระ")
+ *      ก่อนคืนให้ฝั่ง client ตัดสินใจว่าติ๊กส่งได้ไหม กันไม่ให้ส่งใบที่ข้อมูลไม่ครบ/ผิด (เช่น
+ *      เลขผู้เสียภาษีผิดรูปแบบ) ผ่านทางลัดนี้ไปได้ — ยังคงดึงใบเสร็จเต็มจาก PEAK ต่อแถวอยู่
+ *      (แม้ไม่เช็ค journal แล้ว) เพราะต้องใช้เอา documentLink มาแสดง
  *   2) แถวที่ "ส่งแล้ว" (Sent) ตามรายงาน — เทียบกับ sent_log ของเราเอง หาใบที่เรายังไม่มี
  *      ประวัติว่าส่งแล้ว (เช่น ส่งผ่าน PEAK UI โดยตรง) คืนรายชื่อไว้ให้ sync/บันทึกลง DB ได้
  *
@@ -145,11 +146,12 @@ export async function POST(req: NextRequest) {
   }
   const sentCodesInFile = sentRaw.map((r) => r.code);
 
-  // ตรวจสอบข้อมูล contact + journal ของแถว "ยังไม่ส่ง" ทุกใบ เหมือนตารางหลักทุกประการ
-  // (ใช้ buildRow ตัวเดียวกัน) ก่อนอนุญาตให้ติ๊กส่งได้ — ไฟล์ Excel มีแค่ชื่อลูกค้า/เลขภาษี
-  // ดิบ ไม่พอตรวจสอบเอง ต้องดึงใบเสร็จเต็ม + contact จาก PEAK จริงมาเช็ค
-  // concurrency ต่ำกว่าปกติ (6 แทน 12) เพราะยิง /Receipts?code= ทีละใบไม่ dedup ได้เลย
-  // (ต่างจาก contact) — ยิงถี่เกินไปเสี่ยงชน Client-Token ของ PEAK เอง (resCode 600)
+  // ตรวจสอบข้อมูล contact ของแถว "ยังไม่ส่ง" ทุกใบ เหมือนตารางหลักทุกประการ (ใช้ buildRow
+  // ตัวเดียวกัน, ไม่เช็ค journal) ก่อนอนุญาตให้ติ๊กส่งได้ — ยังต้องดึงใบเสร็จเต็มจาก PEAK อยู่
+  // (ไฟล์ Excel มีแค่ชื่อลูกค้า/เลขภาษีดิบ ไม่พอตรวจสอบเอง ต้องเอา contact จริงมาเช็ค และต้อง
+  // ใช้เอา documentLink มาแสดงด้วย) concurrency ต่ำกว่าปกติ (6 แทน 15) เพราะยิง
+  // /Receipts?code= ทีละใบไม่ dedup ได้เลย (ต่างจาก contact) — ยิงถี่เกินไปเสี่ยงชน
+  // Client-Token ของ PEAK เอง (resCode 600)
   const client = getPeakClient();
   const receiptResults = await mapWithConcurrency(awaitRaw, 6, async (row) => {
     try {
@@ -165,17 +167,6 @@ export async function POST(req: NextRequest) {
   // กว่าความเร็ว ถ้าใช้ cache 15 นาทีเหมือนตารางหลัก จะเจอปัญหาว่าเพิ่งแก้ไขข้อมูล contact
   // ใน PEAK มา (เช่น แก้เลขผู้เสียภาษี) แต่ import ซ้ำยังเห็นข้อมูลเก่าอยู่ ไม่ได้ผลจริง
   const contactCache = await fetchContacts(client, validReceipts, undefined, true);
-  const journalMap = new Map<string, boolean | { __error__: string }>();
-  for (let i = 0; i < awaitRaw.length; i++) {
-    const { receipt, error } = receiptResults[i];
-    if (!receipt) {
-      journalMap.set(awaitRaw[i].code, { __error__: error ?? "ไม่พบใบเสร็จนี้ใน PEAK" });
-      continue;
-    }
-    const hasJournal = Array.isArray(receipt.journals) && receipt.journals.length > 0;
-    setCachedReceiptJournal(awaitRaw[i].code, hasJournal);
-    journalMap.set(awaitRaw[i].code, hasJournal);
-  }
   const sent = await sendLog.sentCodes();
 
   const awaitRows = awaitRaw.map((row, i) => {
@@ -190,7 +181,7 @@ export async function POST(req: NextRequest) {
       };
     }
     const documentLink = receipt.documentLink ?? "";
-    const built = buildRow(receipt, contactCache, sent, journalMap);
+    const built = buildRow(receipt, contactCache, sent);
     // ใบนี้มาจากรายงาน PEAK ที่ยืนยันแล้วว่า "ยังไม่ส่ง" (Await) แต่ log ของเราเองดัน
     // คิดว่าเคยส่งสำเร็จแล้ว (alreadySent) — เป็นไปได้แค่กรณีเดียว: เคยยิงคำขอไปแล้ว PEAK
     // ตอบรับ (resCode 200) แต่ไม่เคยได้ callback ยืนยันผลจริงกลับมา (เช่น ตอน tunnel ล่ม)

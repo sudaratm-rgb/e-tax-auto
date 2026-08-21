@@ -1,8 +1,7 @@
 import { settings } from "./config";
-import { getCachedContact, setCachedContact } from "./contactCache";
+import { getCachedContactsBatch, setCachedContact } from "./contactCache";
 import { safeDbWrite } from "./db";
 import { PeakAPIError, PeakClient, type Contact, type Receipt } from "./peakClient";
-import { getCachedReceiptJournal, setCachedReceiptJournal } from "./receiptDetailCache";
 import { validateContact } from "./validators";
 
 // ค่า status param ของ /Receipts/list (ทดสอบกับ API จริง — ไม่ใช่ฟิลด์ status รายใบ
@@ -71,17 +70,15 @@ export async function fetchContacts(
     }
   }
 
-  console.log(`[contact] ${unique.size} contact ไม่ซ้ำจาก ${receipts.length} ใบเสร็จ — เริ่มเช็ค cache`);
-  // เช็ค cache ทุก key แบบขนาน (เร็ว เพราะเป็น local memory/DB query ไม่ใช่ PEAK API
-  // ที่ต้อง rate-limit เหมือนขั้นตอนดึงจริงด้านล่าง) — ข้ามขั้นนี้ทั้งหมดถ้า forceRefresh
-  const lookups = forceRefresh
-    ? [...unique.entries()].map(([key, ref]) => [key, ref, undefined] as const)
-    : await Promise.all(
-        [...unique.entries()].map(async ([key, ref]) => [key, ref, await getCachedContact(key)] as const)
-      );
+  console.log(`[contact] ${unique.size} contact ไม่ซ้ำจาก ${receipts.length} ใบเสร็จ — เริ่มเช็ค cache (batch)`);
   const cache = new Map<string, Contact | { __error__: string }>();
+  let cachedMap = new Map<string, Contact>();
+  if (!forceRefresh) {
+    cachedMap = await getCachedContactsBatch([...unique.keys()]);
+  }
   const toFetch: [string, { code: string; id: string }][] = [];
-  for (const [key, ref, cached] of lookups) {
+  for (const [key, ref] of unique.entries()) {
+    const cached = cachedMap.get(key);
     if (cached !== undefined) {
       cache.set(key, cached);
     } else {
@@ -107,57 +104,6 @@ export async function fetchContacts(
   );
   for (const [key, contact] of fetched) cache.set(key, contact);
   return cache;
-}
-
-/**
- * เช็คว่าใบเสร็จแต่ละใบ "มี journal (บันทึกรับชำระ) แล้วหรือยัง" — ใบที่ยังไม่มี journal
- * เลยถือว่ายังไม่พร้อมส่ง e-Tax (แม้เอกสารจะ Approve แล้วก็ตาม) field นี้ไม่มีใน
- * /Receipts/list (endpoint หลักที่ใช้ดึงรายการ) ต้องยิง GET /Receipts?code= แยกทีละใบเพิ่ม
- * ต่างจาก contact ตรงที่ใบเสร็จแต่ละใบไม่ซ้ำกันเลย จึง dedup ในการดึงครั้งเดียวไม่ได้ (แต่ยัง
- * cache ไว้ช่วยตอน fetch ช่วงวันที่เดิมซ้ำได้ — ดู lib/receiptDetailCache.ts)
- * คืน map: code -> hasJournal (หรือ {__error__: ...} ถ้าดึงไม่ได้)
- */
-export async function fetchReceiptJournals(
-  client: PeakClient,
-  receipts: Receipt[],
-  workers: number = settings.JOURNAL_FETCH_WORKERS,
-  forceRefresh: boolean = false
-): Promise<Map<string, boolean | { __error__: string }>> {
-  const codes = [...new Set(receipts.map((r) => r.code ?? "").filter(Boolean))];
-  console.log(`[journal] ${codes.length} ใบเสร็จ (dedup ไม่ได้ ต้องเช็คทุกใบ) — เริ่มเช็ค cache`);
-
-  const lookups = forceRefresh
-    ? codes.map((code) => [code, undefined] as const)
-    : await Promise.all(codes.map(async (code) => [code, await getCachedReceiptJournal(code)] as const));
-  const result = new Map<string, boolean | { __error__: string }>();
-  const toFetch: string[] = [];
-  for (const [code, cached] of lookups) {
-    if (cached !== undefined) {
-      result.set(code, cached);
-    } else {
-      toFetch.push(code);
-    }
-  }
-  console.log(`[journal] cache hit ${result.size}/${codes.length} — ต้องยิง PEAK จริง ${toFetch.length} ราย`);
-
-  const fetched = await mapWithConcurrency(
-    toFetch,
-    workers,
-    async (code) => {
-      try {
-        const full = await client.getReceipt(code);
-        const hasJournal = Array.isArray(full?.journals) && full!.journals.length > 0;
-        setCachedReceiptJournal(code, hasJournal);
-        return [code, hasJournal] as const;
-      } catch (exc) {
-        const message = exc instanceof PeakAPIError ? exc.message : String(exc);
-        return [code, { __error__: message }] as const; // ไม่ cache ผล error
-      }
-    },
-    "journal"
-  );
-  for (const [code, v] of fetched) result.set(code, v);
-  return result;
 }
 
 /**
@@ -218,14 +164,26 @@ export interface Row {
  * สร้างแถวผลลัพธ์ 1 ใบจาก contact ที่ดึงมาแล้ว (ไม่เรียก API)
  * receipt ที่ส่งเข้ามาต้องมาจาก fetchApprovedCodes/listAllReceipts(status=Approve) แล้ว
  * เท่านั้น — docStatus จึงเป็น "Approve" เสมอโดยไม่ต้องเช็คซ้ำ
+ *
+ * ⚠️ ไม่เช็ค journal (บันทึกรับชำระ) — ถอดออกตั้งใจ (ทั้งตารางหลักและ Import Excel Report)
+ * เพราะเช็คไม่ได้โดยไม่ยิง GET /Receipts?code= แยกทีละใบเพิ่ม (dedup ไม่ได้เหมือน contact)
+ * ซึ่งช้ามากตอนช่วงวันที่กว้าง — /api/send-etax ตอนกดส่งจริงก็ไม่เช็ค journal เช่นกัน ยังตรวจ
+ * แค่ Approve ซ้ำเสมอ (คนละเงื่อนไข) เท่ากับว่าไม่มีจุดไหนในระบบเช็คสถานะชำระเงินก่อนส่งอีก
+ * ต่อไปแล้ว (remainAmount ก็ไม่น่าเชื่อถือ ถูกถอดไปก่อนหน้านี้แล้วเช่นกัน — ดู README)
+ *
+ * ⚠️ ใบที่ส่งสำเร็จแล้ว (alreadySent) ข้ามการตรวจ contact ไปเลย ไม่เรียก validateContact —
+ * ตัดสินใจ "ส่งได้ไหม" ไปแล้วจริง (ส่งซ้ำไม่ได้อยู่แล้วถ้าไม่ force) contact ในนี้อาจไม่ถูกดึง
+ * มาด้วยซ้ำ (ดู /api/fetch ที่ข้ามการดึง contact ให้ใบกลุ่มนี้ไปเลยเพื่อความเร็ว) ถ้าไม่
+ * short-circuit ตรงนี้ก่อน จะได้ผล "ไม่ผ่าน" ปลอม ๆ จาก contact ว่างเปล่า ทั้งที่จริง ๆ คือ
+ * ไม่ได้ตรวจต่างหาก ไม่ใช่ปัญหาข้อมูลจริง
  */
 export function buildRow(
   receipt: Receipt,
   contactCache: Map<string, Contact | { __error__: string }>,
-  sent: Set<string>,
-  journalMap: Map<string, boolean | { __error__: string }>
+  sent: Set<string>
 ): Row {
   const code = receipt.code ?? "";
+  const alreadySent = sent.has(code);
   const contact = contactCache.get(contactKey(receipt)) ?? {};
   const row: Row = {
     code,
@@ -243,13 +201,20 @@ export function buildRow(
     branchCode: (contact as Contact).branchCode ?? "",
     documentLink: receipt.documentLink ?? "",
     isTaxInvoice: receipt.isTaxInvoice,
-    alreadySent: sent.has(code),
+    alreadySent,
     docStatus: "Approve",
     docStatusLabel: "Approve",
     docStatusCss: "approve",
     valid: false,
     reason: "",
   };
+
+  if (alreadySent) {
+    row.valid = true;
+    row.reason = "เคยส่ง e-Tax สำเร็จแล้ว";
+    return row;
+  }
+
   const problems: string[] = [];
   let okReason = "";
 
@@ -261,21 +226,8 @@ export function buildRow(
     else okReason = contactReason;
   }
 
-  // ต้องมี journal (บันทึกรับชำระ) แล้วเท่านั้นถึงถือว่าพร้อมส่ง e-Tax แม้เอกสารจะ Approve
-  // แล้วก็ตาม — field นี้ไม่ได้อยู่ใน /Receipts/list เลยต้องเช็คแยกผ่าน fetchReceiptJournals
-  const journalResult = journalMap.get(code);
-  if (journalResult === undefined || (typeof journalResult === "object" && "__error__" in journalResult)) {
-    const detail = typeof journalResult === "object" ? journalResult.__error__ : "ไม่พบข้อมูล";
-    problems.push(`ตรวจสอบการบันทึกรับชำระไม่สำเร็จ: ${detail}`);
-  } else if (journalResult === false) {
-    problems.push("ยังไม่มีการบันทึกรับชำระ (journal)");
-  }
-
   row.valid = problems.length === 0;
   row.reason = problems.length ? problems.join(" | ") : okReason;
-  if (row.alreadySent) {
-    row.reason = "เคยส่ง e-Tax สำเร็จแล้ว";
-  }
   return row;
 }
 

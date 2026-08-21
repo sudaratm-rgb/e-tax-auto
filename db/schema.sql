@@ -55,11 +55,3 @@ CREATE TABLE IF NOT EXISTS contact_cache (
   contact     JSONB NOT NULL,
   fetched_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
--- cache "มี journal (บันทึกรับชำระ) แล้วหรือยัง" ต่อใบเสร็จ (ดู lib/receiptDetailCache.ts)
--- ใช้เช็คก่อนอนุญาตให้ส่ง e-Tax — ใบที่ยังไม่มี journal เลย ถือว่ายังไม่พร้อมส่ง
-CREATE TABLE IF NOT EXISTS receipt_journal_cache (
-  code         TEXT PRIMARY KEY,
-  has_journal  BOOLEAN NOT NULL,
-  fetched_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-);

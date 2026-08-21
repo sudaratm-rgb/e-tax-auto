@@ -28,6 +28,7 @@ interface Props {
   onSend: () => void;
   onMarkSentSelected: () => void;
   sendLoading: boolean;
+  resending: boolean;
 }
 
 export function TxTable({
@@ -42,7 +43,11 @@ export function TxTable({
   onSend,
   onMarkSentSelected,
   sendLoading,
+  resending,
 }: Props) {
+  // ปุ่มทั้งสองแยก loading ของตัวเอง แต่ปิดทั้งคู่เวลามีการทำงานอย่างใดอย่างหนึ่งอยู่ กันกด
+  // ซ้อนกัน (เช่น กด "ส่ง e-Tax" ระหว่างที่ "ยืนยันว่าส่งแล้ว" ยังทำงานค้างอยู่)
+  const busy = sendLoading || resending;
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "priority", dir: "asc" });
   const [page, setPage] = useState(1);
@@ -156,20 +161,31 @@ export function TxTable({
           <div style={{ flex: 1 }}></div>
           <button
             className="btn ghost"
-            disabled={selected.size === 0 || sendLoading}
-            aria-disabled={selected.size === 0 || sendLoading}
+            disabled={selected.size === 0 || busy}
+            aria-disabled={selected.size === 0 || busy}
             onClick={onMarkSentSelected}
             title='สำหรับใบที่เช็คใน PEAK UI แล้วว่าออก e-Tax สำเร็จจริง แต่แอปยังไม่ได้ callback ยืนยัน'
           >
-            <Icon.Check size={14} /> ยืนยันว่าส่งแล้ว {selected.size > 0 ? `(${selected.size})` : ""}
+            {resending ? (
+              <>
+                <Icon.Refresh size={14} className="spin" /> กำลังบันทึก...
+              </>
+            ) : (
+              <>
+                <Icon.Check size={14} /> ยืนยันว่าส่งแล้ว {selected.size > 0 ? `(${selected.size})` : ""}
+              </>
+            )}
           </button>
-          <button
-            className="btn primary update-btn"
-            disabled={selected.size === 0 || sendLoading}
-            aria-disabled={selected.size === 0 || sendLoading}
-            onClick={onSend}
-          >
-            <Icon.Send size={14} /> ส่ง e-Tax {selected.size > 0 ? `(${selected.size})` : ""}
+          <button className="btn primary update-btn" disabled={selected.size === 0 || busy} aria-disabled={selected.size === 0 || busy} onClick={onSend}>
+            {sendLoading ? (
+              <>
+                <Icon.Refresh size={14} className="spin" /> กำลังส่ง...
+              </>
+            ) : (
+              <>
+                <Icon.Send size={14} /> ส่ง e-Tax {selected.size > 0 ? `(${selected.size})` : ""}
+              </>
+            )}
           </button>
         </div>
         <div className="toolbar-row">

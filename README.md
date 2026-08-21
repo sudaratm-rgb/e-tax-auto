@@ -5,8 +5,9 @@ Router) + TypeScript, deploy อยู่บน **Vercel** (production), Postgre
 แหล่งความจริงหลักของ "ใบไหนส่งแล้ว/ยัง"
 
 ## ฟีเจอร์หลัก
-1. **ดึงใบเสร็จตามช่วงวันที่** จาก PEAK แล้วตรวจสอบอัตโนมัติว่าพร้อมส่ง e-Tax หรือไม่
-   (contact ครบ/ถูกต้อง + มีการบันทึกรับชำระ/journal แล้ว) — ติ๊กเลือกแล้วกดส่งได้ทีละหลายใบ
+1. **ดึงใบเสร็จตามช่วงวันที่** จาก PEAK แล้วตรวจสอบอัตโนมัติว่า contact ครบ/ถูกต้องพอจะส่ง
+   e-Tax หรือไม่ — ติ๊กเลือกแล้วกดส่งได้ทีละหลายใบ (⚠️ ระบบนี้**ไม่เช็คสถานะการชำระเงินก่อน
+   ส่งเลยไม่ว่าทางไหน** — ดูหัวข้อ "เงื่อนไขการบันทึกรับชำระ" ด้านล่างว่าทำไม)
 2. **Import Excel Report** — อัปโหลดรายงานที่ export จากหน้าเว็บ PEAK เอง เพื่อดูสถานะ
    "ส่งแล้ว/ยังไม่ส่ง (Await)" ที่ PEAK API ไม่มี endpoint ให้เช็คโดยตรง แล้วส่ง e-Tax จากแถว
    Await ได้เลยในหน้าเดียวกัน (ดูหัวข้อ "Import Excel Report" ด้านล่าง)
@@ -20,12 +21,13 @@ Router) + TypeScript, deploy อยู่บน **Vercel** (production), Postgre
 ## Flow การทำงาน
 1. เลือกช่วงวันที่ → ดึงใบเสร็จที่ **อนุมัติแล้ว (Approve)** เท่านั้นทุกหน้า
    `GET /Receipts/list?dateStart=&dateEnd=&status=3` (วน pagination จนครบ)
-2. ตรวจสอบแต่ละใบแบบขนาน 2 อย่างพร้อมกัน:
-   - **contact**: ดึงจาก `contactCode`/`contactId` → `GET /Contacts?code=` (cache ข้ามคำขอ 15 นาที)
-   - **journal (บันทึกรับชำระ)**: ดึงใบเสร็จเต็มทีละใบ → `GET /Receipts?code=` เช็ค field
-     `journals` (cache ข้ามคำขอ แบบ TTL ไม่เท่ากันตามผล — ดูหัวข้อ "ความเร็วในการดึงข้อมูล")
+2. ตรวจสอบ **contact เฉพาะใบที่ยังไม่เคยส่ง e-Tax สำเร็จ** เท่านั้น: ดึงจาก
+   `contactCode`/`contactId` → `GET /Contacts?code=` (cache ข้ามคำขอ 15 นาที, dedup ตาม
+   ลูกค้าไม่ซ้ำ) — ใบที่ส่งสำเร็จแล้วข้ามขั้นนี้ไปเลย (ดูหัวข้อ "ความเร็วในการดึงข้อมูล") และ
+   ไม่เช็คสถานะการชำระเงิน/journal เลย (ดูเหตุผลที่หัวข้อ "เงื่อนไขการบันทึกรับชำระ")
 3. ติ๊กเลือกใบที่ต้องการ (default ติ๊กใบที่ผ่าน **และยังไม่เคยส่ง**) → กดส่ง →
-   `POST /Receipts/etaxinvoice` ทีละใบ พร้อมแนบ `callbackUrl`/`keyReference`
+   `POST /Receipts/etaxinvoice` ทีละใบ พร้อมแนบ `callbackUrl`/`keyReference` — ขั้นนี้ตรวจ
+   Approve ซ้ำอีกครั้งเสมอ (ดูหัวข้อ "สถานะเอกสาร")
 4. หลังส่ง หน้าเว็บ poll `/api/etax-status` รอผลออกใบจริงจาก INET แล้วอัปเดตสถานะให้อัตโนมัติ
 
 ## การกันส่งซ้ำ + ประวัติการส่ง — PostgreSQL เป็นแหล่งความจริงหลัก (`lib/sendLog.ts`)
@@ -76,7 +78,6 @@ string ที่ตั้งไว้ยังไม่มี
 | **`etax_callbacks`** | payload ดิบทุกครั้งที่ได้ callback จาก PEAK/INET | ✅ ใช่ |
 | `receipt_checks` | ประวัติผลตรวจใบเสร็จทุกครั้งที่ `/api/fetch` ประมวลผล (append-only) — ตอบ "ใบนี้เคยมีสถานะอะไรบ้าง เปลี่ยนตอนไหน" | ❌ audit เสริม (`safeDbWrite`, ไม่ throw) |
 | `contact_cache` | cache contact ข้าม restart (คู่กับ cache ในแรม) | ❌ cache เสริม |
-| `receipt_journal_cache` | cache "มี journal แล้วหรือยัง" ต่อใบเสร็จ ข้าม restart | ❌ cache เสริม |
 
 ## ผลออกใบจริงแบบ async + callback (สำคัญ — `resCode 200 ≠ ออกใบสำเร็จ`) ✅
 การส่ง e-Tax เป็น **asynchronous**: `POST /Receipts/etaxinvoice` ตอบ `resCode 200` = PEAK
@@ -107,7 +108,7 @@ badge **"Submitted"** (นับรวมใน bucket "Sent" ทันทีท
 เพราะผู้ใช้ต้องการรู้ทันทีว่าส่งออกไปแล้ว) ต่างจาก **"Sent"** ที่ INET ยืนยันออกใบจริงแล้ว —
 ถ้า INET ตีกลับทีหลัง จะเปลี่ยนเป็น Error ได้ (ไม่ได้ล็อกสถานะถาวรตอน submitted) กฎสำคัญ: ใบที่
 เคย `status="issued"` แล้ว (callback ยืนยันแล้วจริง) จะแสดง "Sent" เสมอ **แม้ผลตรวจสอบข้อมูล
-ปัจจุบัน** (เช่น journal ถูกแก้ทีหลัง) **จะไม่ผ่านก็ตาม** — ป้องกันใบที่ออกสำเร็จไปแล้วจริงถูก
+ปัจจุบัน** (เช่น contact ถูกแก้ทีหลัง) **จะไม่ผ่านก็ตาม** — ป้องกันใบที่ออกสำเร็จไปแล้วจริงถูก
 ข้อมูล ณ ตอนนี้ทำให้กลายเป็น "Error" ย้อนหลัง
 
 หลังกดส่ง หน้าเว็บ poll `/api/etax-status` ทุก 3 วิ ~45 วิ เพื่อแจ้ง **"ออกใบสำเร็จ X /
@@ -147,11 +148,12 @@ PEAK Open API **ไม่มี endpoint ให้เช็คสถานะ e-
 1. แถวที่สถานะ e-Doc = **"Await"/"ยังไม่ส่ง"** และสถานะเอกสาร = จ่ายแล้ว/สมบูรณ์แล้ว
    (allow-list `READY_STATUS_VALUES = {Paid, รับชำระแล้ว, Issued}` — ตัด Draft/ร่าง/Voided
    ออก โดยตั้งใจใช้ allow-list ไม่ใช่ block-list เพื่อกันค่าสถานะใหม่ที่ไม่รู้จักในอนาคตไว้
-   ก่อนโดย default) → ดึงใบเสร็จเต็ม + contact จาก PEAK มาตรวจสอบ **เหมือนตารางหลักทุก
-   ประการ** (ใช้ `buildRow` ตัวเดียวกัน: contact ครบ/ถูกต้อง + มี journal แล้ว) ก่อนอนุญาตให้
-   ติ๊กส่งได้ — กันไม่ให้ส่งใบที่ข้อมูลไม่ครบผ่านทางลัดนี้ไปได้ (concurrency ต่ำกว่าตารางหลัก:
-   6 แทน 12 เพราะ `GET /Receipts?code=` dedup ไม่ได้เหมือน contact, และ **บังคับดึงสดใหม่
-   เสมอ ไม่ใช้ cache 15 นาที** เพราะความถูกต้องสำคัญกว่าความเร็วสำหรับการตัดสินใจก่อนส่งจริง)
+   ก่อนโดย default) → ดึงใบเสร็จเต็ม + contact จาก PEAK มาตรวจสอบด้วย `buildRow` ตัวเดียวกับ
+   ตารางหลักเป๊ะ (contact ครบ/ถูกต้องเท่านั้น ไม่เช็ค journal — ดูหัวข้อ "เงื่อนไขการบันทึก
+   รับชำระ") ก่อนอนุญาตให้ติ๊กส่งได้ — ยังต้องดึงใบเสร็จเต็มต่อแถวอยู่เพื่อเอา `documentLink`
+   มาแสดง (concurrency ต่ำกว่าตารางหลัก: 6 แทน 15 เพราะ `GET /Receipts?code=` dedup ไม่ได้
+   เหมือน contact, และ **บังคับดึงสดใหม่เสมอ ไม่ใช้ cache 15 นาที** เพราะความถูกต้องสำคัญ
+   กว่าความเร็วสำหรับการตัดสินใจก่อนส่งจริง)
 2. แถวที่สถานะ e-Doc = **"Sent"/"ส่งแล้ว"** — แสดงตรงจากไฟล์เลย **ไม่ยิง PEAK API เพิ่ม**
    (ไฟล์เต็มเดือนมีเป็นพันแถว ไม่คุ้มและไม่จำเป็น) แล้วเทียบกับ `send_log` ของเราเอง หาใบที่
    เรายังไม่มีประวัติว่าส่งแล้ว (เช่น ส่งผ่าน PEAK UI ตรง ๆ) → ปุ่ม **"sync"** เรียก
@@ -188,51 +190,72 @@ contact) สำหรับกรณีอยากได้แค่ราย�
   → `GET /Receipts?code=` คืนได้ **หลายเอกสาร** (ตัว void เก่า + ตัว live ใหม่)
   `PeakClient.getReceipt()` จึงเลือกตัว **non-void (live)** ก่อนเสมอ (ไม่ใช่ `[0]`)
 
-## เงื่อนไขการบันทึกรับชำระ (journal) ก่อนส่งได้ (`lib/receipts.ts` → `buildRow`)
-นอกจาก contact ต้องผ่านและเอกสารต้อง Approve แล้ว ใบเสร็จต้อง **มีการบันทึกรับชำระ (journal)
-แล้วอย่างน้อย 1 รายการ** ถึงจะถือว่าพร้อมส่ง e-Tax — เป็นกติกาธุรกิจของระบบนี้เอง (field
-`journals` ไม่มีใน `/Receipts/list` ต้องยิง `GET /Receipts?code=` แยกทีละใบเพิ่ม ดู
-`fetchReceiptJournals`) ใบที่ Approve แล้วแต่ยังไม่มี journal จะแสดงเหตุผล
-"ยังไม่มีการบันทึกรับชำระ (journal)" และติ๊กส่งไม่ได้
+## เงื่อนไขการบันทึกรับชำระ — ไม่เช็คที่ไหนในระบบเลย (ตั้งใจ)
+ระบบนี้**ไม่เช็คว่าใบเสร็จมีการบันทึกรับชำระ (journal) แล้วหรือยังในทุกจุด** ไม่ว่าจะที่
+ตารางหลัก (`/api/fetch`), Import Excel Report (`/api/import-report`), หรือตอนกดส่งจริง
+(`/api/send-etax`) — `buildRow` (`lib/receipts.ts`) ตรวจแค่ contact ครบ/ถูกต้องอย่างเดียว
+ไม่มี field journal ในเงื่อนไข `valid` เลยแล้ว
 
-> ⚠️ ระบบ**ไม่**ใช้ `remainAmount` จาก `GET /Receipts?code=` เป็นตัวตัดสินสถานะชำระเงิน —
-> ฟิลด์นี้ไม่น่าเชื่อถือ (พบเคสจริงที่ `paidPayments[]` บันทึกครบเต็มจำนวนแล้วแต่
-> `remainAmount` ไม่ลดลงตาม) ใช้การมี journal เป็นตัวตัดสินแทน
+เหตุผล: field `journals` ไม่มีใน `/Receipts/list` (endpoint หลักที่ใช้ดึงรายการ) ต้องยิง
+`GET /Receipts?code=` แยกทีละใบเพิ่มถึงจะรู้ ซึ่ง **dedup ไม่ได้เหมือน contact** (ใบเสร็จ
+แต่ละใบไม่ซ้ำกันเลย) — ช่วงวันที่กว้าง (นับพันใบ) ต้องยิงนับพันครั้ง วัดจริงแล้วเป็นคอขวดหลัก
+ที่ทำให้ดึง 10 วันช้ากว่าปกติมาก ถอดออกทั้งหมดเพื่อความเร็ว โดยรู้และยอมรับว่าใบที่ยังไม่
+บันทึกรับชำระจะไม่ถูกกรองออกให้อีกต่อไป — ผู้ใช้ต้องเช็คเอง (เช่น ดูใน PEAK UI) ก่อนกดส่งถ้า
+ต้องการความมั่นใจว่าจ่ายแล้วจริง
 
-## ความเร็วในการดึงข้อมูล — concurrency + contact/journal cache ✅
-สำหรับช่วงวันที่กว้าง (เช่น 10 วัน อาจมีถึง 1,000+ ใบ) มี 3 ขั้นที่คุม concurrency แยกกันได้
+> ⚠️ ระบบ**ไม่**เคยใช้ `remainAmount` จาก `GET /Receipts?code=` เป็นตัวตัดสินสถานะชำระเงิน
+> เช่นกัน (ถอดออกไปก่อนหน้านี้แล้ว) — ฟิลด์นี้ไม่น่าเชื่อถือ (พบเคสจริงที่ `paidPayments[]`
+> บันทึกครบเต็มจำนวนแล้วแต่ `remainAmount` ไม่ลดลงตาม) เท่ากับว่า**ไม่มีจุดไหนในระบบนี้เช็ค
+> สถานะการชำระเงินก่อนส่ง e-Tax อีกต่อไปแล้ว**
+
+## ความเร็วในการดึงข้อมูล — concurrency + contact cache + ข้ามใบที่ส่งแล้ว ✅
+**ข้ามการดึง/ตรวจ contact ให้ใบที่ส่ง e-Tax สำเร็จแล้วไปเลย** (`app/api/fetch/route.ts`) —
+เช็คกับ `sendLog.sentCodes()` (query เดียวจาก Postgres) ก่อนเริ่มดึง contact แล้วกรองใบที่
+ส่งแล้วออกจากรายการที่ต้องเช็ค เพราะไม่มีประโยชน์ต้องตรวจซ้ำอีก (ตัดสินใจ "ส่งได้ไหม" ไปแล้ว
+จริง ส่งซ้ำไม่ได้อยู่แล้วถ้าไม่ force) ช่วงวันที่ที่ดึงซ้ำบ่อย ๆ (เช่น ดูย้อนหลังเดือนที่ผ่านมา)
+มักมีใบที่ส่งแล้วมากกว่าใบใหม่มาก การข้ามขั้นนี้ลดจำนวน contact ที่ต้องดึง/เช็ค cache ได้เยอะ
+— `buildRow` (`lib/receipts.ts`) short-circuit ให้ใบกลุ่มนี้เป็น `valid=true` ทันทีโดยไม่เรียก
+`validateContact` เลย (ไม่งั้นจะเห็นผล "ไม่ผ่าน" ปลอม ๆ จาก contact ที่ไม่ได้ดึงมา) ผลข้างเคียง
+ที่ตั้งใจ: หน้ารายละเอียดของใบที่ส่งแล้วจะไม่มีชื่อลูกค้า/ที่อยู่/เลขผู้เสียภาษีให้ดู (แสดง `-`
+พร้อมข้อความอธิบายว่าตั้งใจข้าม ไม่ใช่ข้อมูลหาย) — `contactCode` ยังมีอยู่เสมอเพราะมาจาก
+receipt โดยตรง ไม่ต้องพึ่ง contact object
+
+สำหรับช่วงวันที่กว้าง (เช่น 10 วัน อาจมีถึง 1,000+ ใบ) มี 2 ขั้นที่คุม concurrency แยกกันได้
 ผ่าน env (ค่าที่เหมาะสมขึ้นกับบัญชีจริง ต้องทดสอบเอง — ยิ่งสูงยิ่งเร็ว แต่ยิ่งเสี่ยงชน
 `resCode 600` บ่อยขึ้น):
 
 | env var | คุมอะไร | default | หมายเหตุ |
 |---|---|---|---|
-| `RECEIPT_PAGE_CONCURRENCY` | จำนวนหน้า `GET /Receipts/list` ที่ดึงพร้อมกัน | 10 | ขั้นแรกสุด ดึงรายชื่อใบเสร็จ |
-| `CONTACT_FETCH_WORKERS` | จำนวน `GET /Contacts?code=` ที่ยิงพร้อมกัน | 12 | dedup ได้เยอะ (ลูกค้าเดิมซ้ำกันมาก) จึงไม่ต้องสูงมาก |
-| `JOURNAL_FETCH_WORKERS` | จำนวน `GET /Receipts?code=` (เช็ค journal) ที่ยิงพร้อมกัน | 20 | **dedup ไม่ได้เลย** (ทุกใบไม่ซ้ำกัน) — คอขวดหลักตัวจริงของช่วงวันที่กว้าง |
+| `RECEIPT_PAGE_CONCURRENCY` | จำนวนหน้า `GET /Receipts/list` ที่ดึงพร้อมกัน | 12 | ขั้นแรกสุด ดึงรายชื่อใบเสร็จ |
+| `CONTACT_FETCH_WORKERS` | จำนวน `GET /Contacts?code=` ที่ยิงพร้อมกัน | 15 | dedup ได้เยอะ (ลูกค้าเดิมซ้ำกันมาก) จึงไม่ต้องสูงมาก |
 
 `GET /Contacts?code=` เองก็ช้า (~5s/call) — ลองวิธี "ดึง contact ทั้งบัญชีแบบ list/page
 ล่วงหน้า" ดูแล้ว **ไม่ช่วย**: ดึง 1 หน้า (100 รายการ) ใช้เวลา ~14 วินาที พอ ๆ กับดึงทีละใบ
 ไม่คุ้มที่จะ sync ทั้งบัญชี (3,627 contact ในบัญชีทดสอบ)
 
 สิ่งที่ช่วยจริงคือ **cache 2 ชั้น** (ในหน่วยความจำผ่าน `globalThis` + PostgreSQL อยู่ข้าม
-restart ได้ — `lib/contactCache.ts`, `lib/receiptDetailCache.ts`) สำหรับทั้ง contact และ journal:
-- **contact**: TTL 15 นาที เพราะลูกค้าเดิมซ้ำกันมากทั้งในวันเดียวกันและข้ามวันที่ต่างกัน —
-  ทดสอบจริง: ดึงวันเดียวกันซ้ำ (contact ทุกตัวมาจาก cache หมด) จาก **29.2s เหลือ 0.7s** (~40x)
-- **journal**: TTL **ไม่เท่ากันตามผล** (asymmetric) เพราะ journal มีแต่จะ "ถูกเพิ่ม" ไม่ค่อย
-  ถูกลบทีหลัง — `hasJournal=true` cache ได้นาน 24 ชม., `hasJournal=false` cache สั้นแค่ 5
-  นาที (เผื่อมีการบันทึกรับชำระเข้ามาใหม่เร็ว ๆ นี้ ต้องเช็คซ้ำถี่กว่า)
+restart ได้ — `lib/contactCache.ts`) TTL 15 นาที เพราะลูกค้าเดิมซ้ำกันมากทั้งในวันเดียวกัน
+และข้ามวันที่ต่างกัน — ทดสอบจริง: ดึงวันเดียวกันซ้ำ (contact ทุกตัวมาจาก cache หมด)
+จาก **29.2s เหลือ 0.7s** (~40x) — เช็ค cache ยิง SQL **แบบ batch เดียว**
+(`WHERE key = ANY($1)`, `getCachedContactsBatch`) แทนที่จะยิงคำสั่งแยกทีละ contact เพราะ
+ตอนช่วงวันที่กว้างที่มี contact ไม่ซ้ำนับร้อย การยิง query แยกทีละตัวจะกลายเป็นคอขวดที่ไม่
+จำเป็นเอง (round-trip ไป PostgreSQL นับร้อยครั้งเพื่อเช็ค cache อย่างเดียว)
 
-ผลคือ **ครั้งแรกที่ดึงช่วงวันที่หนึ่งจะช้าที่สุดเสมอ** (ทุกใบเป็น cache miss ทั้ง contact
-และ journal) ครั้งต่อไปที่ดึงช่วงวันที่เดิม (หรือช่วงที่คาบเกี่ยวกัน) จะเร็วขึ้นมากเพราะ
-ส่วนใหญ่มาจาก cache — ทั้งสอง cache **ไม่ cache ผล error** (network/API ล้มเหลว) เพื่อไม่ให้
-ค้างสถานะผิดพลาดไว้นานเกินจำเป็น และ `forceRefresh=true` (ปุ่ม "รีเฟรช" ในหน้าเว็บหลัก, และ
-เสมอใน Import Excel Report) จะข้าม cache ทั้งหมด ดึงสดใหม่จาก PEAK ทุกราย
+ผลคือ **ครั้งแรกที่ดึงช่วงวันที่หนึ่งจะช้าที่สุดเสมอ** (contact ทุกตัวเป็น cache miss)
+ครั้งต่อไปที่ดึงช่วงวันที่เดิม (หรือช่วงที่คาบเกี่ยวกัน) จะเร็วขึ้นมากเพราะส่วนใหญ่มาจาก
+cache — cache **ไม่ cache ผล error** (network/API ล้มเหลว) เพื่อไม่ให้ค้างสถานะผิดพลาดไว้
+นานเกินจำเป็น และ `forceRefresh=true` (ปุ่ม "รีเฟรช" ในหน้าเว็บหลัก) จะข้าม cache ทั้งหมด
+ดึงสดใหม่จาก PEAK ทุกราย
 
 ## Resilience
+- `lib/config.ts` บังคับ `dns.setDefaultResultOrder("ipv4first")` ตั้งแต่โหลดโมดูล — เครือข่าย
+  บางที่ (Wi-Fi/ISP ที่ routing IPv6 พัง) ทำให้ Node.js ลอง resolve เป็น IPv6 ก่อนแล้วค้าง/
+  timeout นานกว่าจะ fallback มา IPv4 เอง เจอจริงว่าอาการนี้ทำให้ request ไปช้ามากหรือค้างเงียบ ๆ
+  โดยไม่มี error ชัดเจน (ต่างจาก resCode 600 ที่อย่างน้อยยังมี error message)
 - `PeakClient` (`lib/peakClient.ts`) มี **auto-retry + exponential backoff** (2,4,8,16s) เมื่อเจอ
   resCode 600 (token ติด throttle) — POST ปิด network-retry เพื่อกัน double-send
-- ปรับ `CONTACT_FETCH_WORKERS`/`JOURNAL_FETCH_WORKERS`/`RECEIPT_PAGE_CONCURRENCY` ให้ต่ำลงได้
-  ถ้าเจอ resCode 600 บ่อย (ดูตารางด้านบน)
+- ปรับ `CONTACT_FETCH_WORKERS`/`RECEIPT_PAGE_CONCURRENCY` ให้ต่ำลงได้ถ้าเจอ resCode 600 บ่อย
+  (ดูตารางด้านบน)
 - **`getPeakClient()` ใช้ client เดียว (และ Client-Token เดียว) ร่วมกันทั้ง process** ผ่าน
   singleton บน `globalThis` แทนที่จะ `new PeakClient()` ต่อ request — PEAK อนุญาต
   Client-Token ที่ valid ได้ครั้งละ 1 ตัวต่อ connectId เท่านั้น มินต์ token ใหม่ต่อ request
@@ -244,11 +267,16 @@ restart ได้ — `lib/contactCache.ts`, `lib/receiptDetailCache.ts`) สำ
   กว้าง/import ไฟล์ใหญ่วัดจริงแล้วใช้เวลาได้ถึงหลักนาที) — เพดานนี้ยังขึ้นกับแผน Vercel ที่ใช้ด้วย
 
 > หมายเหตุ: list ส่ง `contactCode`/`contactId` มาให้แล้ว จึงไม่ต้องเรียก `GET /Receipts?code=`
-> ซ้ำต่อใบเพื่ออ่าน contact — endpoint นี้ถูกเรียกอยู่ 2 จุด: (1) `fetchReceiptJournals`
-> เพื่อเช็ค journal ตอนดึงรายการ (2) `POST /api/send-etax` เพื่อเอา `issuedDate` มาใช้เช็ค
-> สถานะอนุมัติซ้ำก่อนส่งจริง (1 ครั้งต่อใบตอนกดส่งจริงเท่านั้น)
+> ซ้ำต่อใบเพื่ออ่าน contact ที่ตารางหลัก — endpoint นี้ถูกเรียกอยู่ 2 จุด: (1)
+> `/api/import-report` เพื่อดึงใบเสร็จเต็ม (เอา `documentLink` มาแสดง) ต่อแถว Await ทุกแถว
+> (2) `POST /api/send-etax` เพื่อเอา `issuedDate` มาใช้เช็คสถานะอนุมัติซ้ำก่อนส่งจริง
+> (1 ครั้งต่อใบตอนกดส่งจริงเท่านั้น)
 
 ## เงื่อนไขการตรวจ contact (`lib/validators.ts`) — ผิดข้อใดข้อหนึ่ง = ไม่ผ่าน (ไม่ส่ง)
+> ⚠️ เงื่อนไขด้านล่างนี้ใช้เฉพาะใบที่ **ยังไม่เคยส่ง e-Tax สำเร็จ** เท่านั้น — ใบที่ส่งแล้ว
+> ข้ามการตรวจนี้ไปเลย ถือว่า `valid=true` เสมอโดยไม่เรียก `validateContact` (ดูหัวข้อ
+> "ความเร็วในการดึงข้อมูล")
+
 ร่วมทุกกลุ่ม: มีชื่อ (name) + type ต้องรู้จัก + ถ้ามีอีเมลต้องรูปแบบถูก (`"x@y.com Fax"` = ผิด)
 
 แบ่งตาม `type` (enum ทางการ PEAK) เป็น 3 กลุ่ม:
@@ -321,8 +349,8 @@ npm run dev                   # เปิด http://localhost:3000 (production: 
 > callback จาก PEAK/INET **ไปไม่ถึง localhost** (ไม่มี public URL) — ทดสอบส่งจริงบนเครื่อง
 > local จะค้าง "Submitted" รอผลจนหมดเวลา แนะนำทดสอบ flow ครบวงจรบน Vercel deployment แทน
 >
-> 1 วันที่มีใบเสร็จเยอะ (เช่น ~145 ใบ) การดึง+ตรวจใช้เวลาราว 1 นาที (เพราะ contact/journal
-> API ช้า) ปรับความเร็วได้ที่ `CONTACT_FETCH_WORKERS`
+> 1 วันที่มีใบเสร็จเยอะ (เช่น ~145 ใบ) การดึง+ตรวจใช้เวลาราว 1 นาที (เพราะ contact API ช้า)
+> ปรับความเร็วได้ที่ `CONTACT_FETCH_WORKERS`
 
 ## ค่า etaxConnectType (ทดสอบกับ API จริงแล้ว ✅)
 | ค่า | ความหมาย | ผลทดสอบ |
@@ -337,7 +365,7 @@ npm run dev                   # เปิด http://localhost:3000 (production: 
 | ไฟล์ | หน้าที่ |
 |---|---|
 | `app/page.tsx` | หน้าเว็บหลัก (React client component) — ตารางใบเสร็จ, ติ๊กเลือก/ส่ง, poll สถานะ |
-| `app/api/fetch/route.ts` | ดึงใบเสร็จ (Approve) + ตรวจ contact/journal ทั้งช่วงวันที่ |
+| `app/api/fetch/route.ts` | ดึงใบเสร็จ (Approve) + ตรวจ contact ทั้งช่วงวันที่ |
 | `app/api/send-etax/route.ts` | ส่ง e-Tax ทีละใบตาม code ที่เลือก พร้อมตรวจ Approve ซ้ำ |
 | `app/api/etax-callback/route.ts` | รับผลออกใบจริง async จาก PEAK/INET (`POST`) + ดูประวัติ (`GET`) |
 | `app/api/etax-status/route.ts` | สถานะออกใบจริงต่อ code (pending/issued/failed) สำหรับ poll |
@@ -346,15 +374,14 @@ npm run dev                   # เปิด http://localhost:3000 (production: 
 | `app/api/approved-receipts/route.ts` | รายการใบเสร็จ Approve ดิบ (ไม่ตรวจ contact) |
 | `app/api/sent-log`, `sent-codes`, `sent-status/route.ts` | อ่านประวัติการส่งจาก `send_log` |
 | `lib/peakClient.ts` | client เรียก PEAK API + เซ็น HMAC + แกะ response + mint Client-Token อัตโนมัติ |
-| `lib/receipts.ts` | ดึง/cache contact + journal แบบขนาน, ประกอบแถวผลลัพธ์ (`buildRow`), `fetchApprovedCodes` |
+| `lib/receipts.ts` | ดึง/cache contact แบบขนาน, ประกอบแถวผลลัพธ์ (`buildRow`), `fetchApprovedCodes` |
 | `lib/validators.ts` | กติกาตรวจ contact ตาม type |
 | `lib/sendLog.ts` | บันทึกผลการส่ง + กันส่งซ้ำ + ผล callback — **Postgres ล้วน** (`send_log`/`etax_callbacks`) |
 | `lib/dashboard.ts` | utility ฝั่ง client: จัดกลุ่มสถานะแถว (`classifyRow`), format วันที่/จำนวนเงิน |
 | `lib/config.ts` | โหลด env |
-| `lib/contactCache.ts` | cache contact 2 ชั้น (memory + Postgres) TTL 15 นาที |
-| `lib/receiptDetailCache.ts` | cache "มี journal แล้วหรือยัง" 2 ชั้น TTL ไม่เท่ากันตามผล |
+| `lib/contactCache.ts` | cache contact 2 ชั้น (memory + Postgres) TTL 15 นาที, เช็คแบบ batch เดียว |
 | `lib/db.ts` | pool เชื่อมต่อ PostgreSQL + normalize connection string (SSL) + สร้างตารางอัตโนมัติ + `safeDbWrite` |
-| `db/schema.sql` | schema ทั้งหมด (`send_log`/`etax_callbacks`/`receipt_checks`/`contact_cache`/`receipt_journal_cache`) |
+| `db/schema.sql` | schema ทั้งหมด (`send_log`/`etax_callbacks`/`receipt_checks`/`contact_cache`) |
 | `components/ImportReportPanel.tsx` | UI หน้าต่าง Import Excel Report (อัปโหลด/ตัวกรอง/ส่ง/sync) |
 | `components/DetailPanel.tsx` | แผงรายละเอียดใบเสร็จ (ที่อยู่, สาขา/สำนักงานใหญ่, เหตุผลไม่ผ่าน) |
 | `components/Topbar.tsx` | แถบด้านบน (เลือกช่วงวันที่, ปุ่มรีเฟรช, เปิด Import Report) |

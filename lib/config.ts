@@ -1,4 +1,12 @@
 /** โหลดค่าตั้งค่าทั้งหมดจาก environment (.env / .env.local) */
+import dns from "dns";
+
+try {
+  // บังคับ Node.js ให้ resolve IPv4 ก่อน IPv6 เพื่อแก้ปัญหา IPv6 routing timeout บนเครือข่าย Wi-Fi/ISP
+  dns.setDefaultResultOrder("ipv4first");
+} catch {
+  // ignore
+}
 
 function required(key: string): string {
   const val = (process.env[key] ?? "").trim();
@@ -40,16 +48,11 @@ export const settings = {
 
   // จำนวน request ดึง contact พร้อมกัน (PEAK contact API ช้า ~5s/call จึงต้องดึงขนาน)
   // contact dedup ได้เยอะ (ลูกค้าเดิมซ้ำกันมาก) ค่านี้จึงไม่จำเป็นต้องสูงมาก
-  CONTACT_FETCH_WORKERS: parseInt(process.env.CONTACT_FETCH_WORKERS ?? "12", 10),
-
-  // จำนวน request เช็ค journal (บันทึกรับชำระ) พร้อมกัน — แยกจาก CONTACT_FETCH_WORKERS เพราะ
-  // journal dedup ไม่ได้เลย (ใบเสร็จแต่ละใบไม่ซ้ำกัน ต้องยิง GET /Receipts?code= ทุกใบเสมอ)
-  // ช่วงวันที่กว้างที่มีใบเสร็จเยอะ นี่คือคอขวดหลักตัวจริง จึงตั้ง default สูงกว่า contact
-  JOURNAL_FETCH_WORKERS: parseInt(process.env.JOURNAL_FETCH_WORKERS ?? "20", 10),
+  CONTACT_FETCH_WORKERS: parseInt(process.env.CONTACT_FETCH_WORKERS ?? "15", 10),
 
   // จำนวนหน้า GET /Receipts/list ที่ดึงพร้อมกัน ตอนช่วงวันที่กว้างมีหลายหน้า (คนละค่ากับ
   // CONTACT_FETCH_WORKERS เพราะเป็นคนละ endpoint กัน ไม่จำเป็นต้องแชร์ค่าจำกัดเดียวกัน)
-  RECEIPT_PAGE_CONCURRENCY: parseInt(process.env.RECEIPT_PAGE_CONCURRENCY ?? "10", 10),
+  RECEIPT_PAGE_CONCURRENCY: parseInt(process.env.RECEIPT_PAGE_CONCURRENCY ?? "12", 10),
 
   // e-tax defaults
   ETAX_CONNECT_TYPE: parseInt(process.env.ETAX_CONNECT_TYPE ?? "1", 10),
